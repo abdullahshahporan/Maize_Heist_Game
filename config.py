@@ -4,6 +4,14 @@ All constants, colours, sizes, and difficulty settings.
 """
 
 import os
+import sys
+
+# Base path: in a PyInstaller bundle, assets are extracted to sys._MEIPASS;
+# during normal development, use the script directory.
+if getattr(sys, 'frozen', False):
+    _BASE_DIR = sys._MEIPASS
+else:
+    _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ── Window ──────────────────────────────────────────────
 WINDOW_WIDTH = 1000
@@ -55,6 +63,7 @@ TREASURE_COUNTS = {
 
 # ── Temporary Wall ─────────────────────────────────────
 TEMP_WALL_LIFETIME = 5  # full rounds
+MAX_WALLS_PER_PLAYER = 3  # max active temp walls per player at any time
 
 # ── Turn Limit ─────────────────────────────────────────
 MAX_TURNS = 200
@@ -67,12 +76,12 @@ DIFFICULTY_SETTINGS = {
         "label": "Easy",
     },
     "medium": {
-        "minimax_depth": 5,
+        "minimax_depth": 4,
         "wall_density": 0.15,
         "label": "Medium",
     },
     "hard": {
-        "minimax_depth": 6,
+        "minimax_depth": 5,
         "wall_density": 0.20,
         "label": "Hard",
     },
@@ -88,10 +97,14 @@ PLAYER_TYPE_MINIMAX = "minimax"
 PLAYER_TYPE_ASTAR = "astar"
 
 # ── Logging ────────────────────────────────────────────
-LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
+if getattr(sys, 'frozen', False):
+    # In frozen exe, write logs next to the executable
+    LOG_DIR = os.path.join(os.path.dirname(sys.executable), "logs")
+else:
+    LOG_DIR = os.path.join(_BASE_DIR, "logs")
 
-# ── Asset dir (optional) ──────────────────────────────
-ASSET_DIR = os.path.join(os.path.dirname(__file__), "assets")
+# ── Asset dir ──────────────────────────────────────────────
+ASSET_DIR = os.path.join(_BASE_DIR, "assets")
 
 # ── AI Decision Timeout (seconds) ─────────────────────
 AI_TIMEOUT = 5.0

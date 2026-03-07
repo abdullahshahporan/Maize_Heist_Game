@@ -89,19 +89,44 @@ def generate_maze(difficulty_key: str):
     occupied = {(p1_row, p1_col), (p2_row, p2_col)}
     valid_treasure_cells = [pos for pos in reachable if pos not in occupied]
 
-    # Place treasures
+    # Place treasures spread across the board
+    # Divide board into quadrants and ensure each gets some treasures
     treasures = []
     treasure_list = []
     for t_type, count in TREASURE_COUNTS.items():
         for _ in range(count):
             treasure_list.append(t_type)
+    random.shuffle(treasure_list)
 
-    random.shuffle(valid_treasure_cells)
-    for i, t_type in enumerate(treasure_list):
-        if i >= len(valid_treasure_cells):
-            break
-        r, c = valid_treasure_cells[i]
-        treasures.append(Treasure(r, c, t_type, TREASURE_VALUES[t_type]))
+    # Sort valid cells into quadrants for even distribution
+    mid_r, mid_c = rows // 2, cols // 2
+    quads = [[], [], [], []]  # TL, TR, BL, BR
+    for pos in valid_treasure_cells:
+        r, c = pos
+        qi = (0 if r < mid_r else 2) + (0 if c < mid_c else 1)
+        quads[qi].append(pos)
+    for q in quads:
+        random.shuffle(q)
+
+    # Distribute treasures across quadrants round-robin
+    used_positions = set()
+    qi = 0
+    for t_type in treasure_list:
+        placed = False
+        for attempt in range(4):
+            q = quads[(qi + attempt) % 4]
+            for pos in q:
+                if pos not in used_positions:
+                    r, c = pos
+                    treasures.append(
+                        Treasure(r, c, t_type, TREASURE_VALUES[t_type])
+                    )
+                    used_positions.add(pos)
+                    placed = True
+                    break
+            if placed:
+                break
+        qi = (qi + 1) % 4
 
     return board, player1, player2, treasures
 

@@ -1,7 +1,7 @@
 """
 minimax_agent.py — AI Agent 1: Minimax with Alpha-Beta pruning.
-Optimized: move ordering at root, transposition table reuse, iterative
-deepening for time control at higher depths.
+Optimized: iterative deepening with aspiration windows, TT reuse
+across iterations, instant-capture shortcut.
 """
 
 from config import DIFFICULTY_SETTINGS
@@ -11,10 +11,9 @@ from ai.alphabeta import alphabeta, clear_transposition_table, _order_actions
 
 def choose_action_minimax(game_state, difficulty: str) -> Action:
     """
-    Evaluate all legal actions for the current player using Minimax
-    with Alpha-Beta pruning and return the best action.
-    Uses iterative deepening so the TT from shallower searches
-    improves pruning at deeper levels.
+    Evaluate all legal actions using Minimax with Alpha-Beta pruning.
+    Uses iterative deepening with aspiration windows so shallow-depth
+    TT entries accelerate deeper searches.
     """
     depth = DIFFICULTY_SETTINGS[difficulty]["minimax_depth"]
     player = game_state.get_current_player()
@@ -23,7 +22,22 @@ def choose_action_minimax(game_state, difficulty: str) -> Action:
     if not actions:
         return None
     if len(actions) == 1:
-        return actions[0]  # only one choice — skip search
+        return actions[0]
+
+    # ── Instant-capture shortcut ────────────────────────
+    # If a move lands on a treasure, take it immediately (no search cost).
+    treasure_set = {(t.row, t.col): t.value for t in game_state.treasures}
+    best_capture = None
+    best_capture_val = 0
+    for a in actions:
+        if a.action_type == ACTION_MOVE and a.target in treasure_set:
+            v = treasure_set[a.target]
+            if v > best_capture_val:
+                best_capture_val = v
+                best_capture = a
+    # Only skip search for high-value captures (gold/diamond)
+    if best_capture and best_capture_val >= 10:
+        return best_capture
 
     # Order moves at root for better pruning
     actions = _order_actions(actions, game_state)
@@ -31,30 +45,51 @@ def choose_action_minimax(game_state, difficulty: str) -> Action:
     clear_transposition_table()
 
     best_action = actions[0]
+    prev_value = 0.0
+    ASPIRATION_WINDOW = 30.0
 
-    # Iterative deepening: search depth 1, 2, ... up to target
-    # Each pass fills the TT, making deeper passes prune more aggressively
+    # Iterative deepening with aspiration windows
     for d in range(1, depth + 1):
+        # Aspiration window — narrows search on iterations 2+
+        if d >= 2:
+            a_alpha = prev_value - ASPIRATION_WINDOW
+            a_beta = prev_value + ASPIRATION_WINDOW
+        else:
+            a_alpha = float('-inf')
+            a_beta = float('inf')
+
         current_best_action = actions[0]
         current_best_value = float('-inf')
 
         for action in actions:
             child = game_state.clone()
             child.apply_action(action)
-            value = alphabeta(child, d - 1, float('-inf'), float('inf'),
+            value = alphabeta(child, d - 1, a_alpha, a_beta,
                               False, player.id)
             if value > current_best_value:
                 current_best_value = value
                 current_best_action = action
 
-        best_action = current_best_action
+        # If aspiration window failed (all values outside), re-search
+        if current_best_value <= a_alpha or current_best_value >= a_beta:
+            current_best_value = float('-inf')
+            for action in actions:
+                child = game_state.clone()
+                child.apply_action(action)
+                value = alphabeta(child, d - 1, float('-inf'), float('inf'),
+                                  False, player.id)
+                if value > current_best_value:
+                    current_best_value = value
+                    current_best_action = action
 
-        # Re-order actions: put current best first for next iteration
+        best_action = current_best_action
+        prev_value = current_best_value
+
+        # Put best first for next iteration
         if best_action in actions:
             actions.remove(best_action)
             actions.insert(0, best_action)
 
-        # Early termination if we found a winning move
         if current_best_value >= 9000.0:
             break
 

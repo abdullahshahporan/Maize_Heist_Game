@@ -1,0 +1,17 @@
+# Virtual environment
+.venv/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+
+# Logs
+logs/
+
+# IDE
+.vscode/

@@ -134,7 +134,7 @@ def run_game(screen, clock, game_state: GameState):
             game_state.determine_winner()
             draw_end_screen(screen, game_state)
             # Save log once
-            if not hasattr(game_state, "_logged"):
+            if not game_state._logged:
                 save_match_log(game_state, ai_times)
                 game_state._logged = True
         else:

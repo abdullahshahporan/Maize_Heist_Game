@@ -15,17 +15,15 @@ def evaluate_wall_placements(game_state):
     For each valid wall position, compute wall_utility =
         opponent_path_increase - self_path_penalty.
     Returns list of (wall_pos, utility) sorted descending by utility.
-
-    Optimization: computes BFS distances from both players ONCE before
-    the wall loop, then for each candidate wall only does lightweight
-    grid-level BFS (no Board clone, no GameState clone).
+    Respects MAX_WALLS_PER_PLAYER limit via updated get_valid_wall_positions.
     """
     player = game_state.get_current_player()
     opponent = game_state.get_opponent()
     board = game_state.board
     treasures = game_state.treasures
 
-    wall_positions = get_valid_wall_positions(board, player, opponent, treasures)
+    wall_positions = get_valid_wall_positions(board, player, opponent,
+                                              treasures, game_state.temp_walls)
 
     if not wall_positions or not treasures:
         return []

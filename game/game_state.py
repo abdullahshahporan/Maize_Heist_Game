@@ -11,6 +11,7 @@ from game.entities import Player, Treasure, TemporaryWall
 from game.actions import Action, ACTION_MOVE, ACTION_PLACE_WALL
 from game.rules import (get_valid_moves, get_valid_wall_positions,
                          get_all_actions, has_any_valid_action)
+from utils.pathfinding import bfs_distance
 from game.maze_generator import find_empty_reachable_cell
 
 
@@ -62,13 +63,14 @@ class GameState:
     def get_valid_wall_positions(self, player: Player):
         opponent = self.player2 if player.id == 1 else self.player1
         return get_valid_wall_positions(self.board, player, opponent,
-                                        self.treasures)
+                                        self.treasures, self.temp_walls)
 
     def get_all_actions(self, player: Player = None):
         if player is None:
             player = self.get_current_player()
         opponent = self.player2 if player.id == 1 else self.player1
-        return get_all_actions(self.board, player, opponent, self.treasures)
+        return get_all_actions(self.board, player, opponent, self.treasures,
+                               self.temp_walls)
 
     # ── Apply action ────────────────────────────────────
     def apply_action(self, action: Action):
@@ -81,10 +83,25 @@ class GameState:
         elif action.action_type == ACTION_PLACE_WALL:
             r, c = action.target
             self.board.set_temp_wall(r, c)
-            tw = TemporaryWall(r, c, player.id, self.round_count,
-                               TEMP_WALL_LIFETIME)
-            self.temp_walls.append(tw)
-            self.wall_placements[player.id] += 1
+            # In real game (not AI simulation), verify opponent isn't
+            # completely cut off from all treasures
+            wall_ok = True
+            if not self._is_simulation:
+                opp = self.get_opponent()
+                opp_has_path = False
+                for t in self.treasures:
+                    d = bfs_distance(self.board, opp.pos, t.pos)
+                    if d >= 0:
+                        opp_has_path = True
+                        break
+                if not opp_has_path:
+                    self.board.clear_cell(r, c)
+                    wall_ok = False
+            if wall_ok:
+                tw = TemporaryWall(r, c, player.id, self.round_count,
+                                   TEMP_WALL_LIFETIME)
+                self.temp_walls.append(tw)
+                self.wall_placements[player.id] += 1
 
         self.turn_count += 1
 
@@ -221,4 +238,5 @@ class GameState:
         gs.wall_placements = {1: self.wall_placements[1],
                                2: self.wall_placements[2]}
         gs._is_simulation = True  # AI clones skip spawning
+        gs._logged = False
         return gs

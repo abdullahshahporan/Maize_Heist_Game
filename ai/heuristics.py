@@ -1,6 +1,13 @@
 """
 heuristics.py — Evaluation function used by Minimax (and reusable elsewhere).
 Optimized: single BFS pass, inline mobility counting, fast terminal checks.
+
+Design goals:
+  - Strongly reward collecting treasures (score difference)
+  - Reward moving toward high-value treasures (exploration)
+  - Mildly reward blocking opponent from contested treasures
+  - Penalise self-trapping (low mobility)
+  - Balanced so Minimax explores the whole board, not camp in corners
 """
 
 from collections import deque
@@ -16,14 +23,13 @@ def evaluate(game_state, maximizing_player_id: int) -> float:
     Higher is better for that player.
 
     Components:
-      - score_difference
-      - distance to best treasure (value/distance weighted)
-      - opponent distance to competing treasures
-      - mobility difference
-      - blocking advantage
-      - self-trap risk penalty
+      1. score_difference — primary driver
+      2. treasure_potential — weighted sum of value/(dist+1) for all reachable treasures
+      3. race_advantage — bonus when closer to high-value treasures than opponent
+      4. mobility — penalise being boxed in, mild reward for open positions
+      5. collection_progress — reward collecting more treasures
     """
-    # Fast terminal check first
+    # Fast terminal check
     if game_state.game_over:
         w = game_state.winner
         if w is not None:
@@ -42,29 +48,39 @@ def evaluate(game_state, maximizing_player_id: int) -> float:
     rows = board.rows
     cols = board.cols
 
-    # 1. Score difference
+    # 1. Score difference — most important
     score_diff = me.score - opp.score
 
-    # 2 & 3. BFS from both players — single pass each, inlined for speed
+    # 2 & 3. BFS from both players
     my_dists = _fast_bfs(grid, rows, cols, me.row, me.col)
     opp_dists = _fast_bfs(grid, rows, cols, opp.row, opp.col)
 
-    # Find best treasure by value/distance ratio
-    best_treasure_val = 0.0
-    my_dist_best = 0.0
-    opp_dist_best = 0.0
+    # Treasure potential: sum value/(dist+1) for all reachable treasures
+    # Race advantage: bonus when I'm closer to a treasure than opponent
+    my_treasure_potential = 0.0
+    opp_treasure_potential = 0.0
+    race_advantage = 0.0
 
     for t in game_state.treasures:
         tp = (t.row, t.col)
         d_me = my_dists.get(tp, 999)
         d_opp = opp_dists.get(tp, 999)
-        val = t.value / (d_me + 1)
-        if val > best_treasure_val:
-            best_treasure_val = val
-            my_dist_best = d_me
-            opp_dist_best = d_opp
 
-    # 4. Mobility — inline count of walkable non-opponent neighbors
+        if d_me < 999:
+            my_treasure_potential += t.value / (d_me + 1)
+        if d_opp < 999:
+            opp_treasure_potential += t.value / (d_opp + 1)
+
+        # Race bonus: who gets there first?
+        if d_me < 999 and d_opp < 999:
+            if d_me < d_opp:
+                race_advantage += t.value * 0.3  # I'm closer
+            elif d_opp < d_me:
+                race_advantage -= t.value * 0.15  # opponent closer (mild penalty)
+
+    treasure_diff = my_treasure_potential - opp_treasure_potential
+
+    # 4. Mobility
     mr, mc = me.row, me.col
     opr, opc = opp.row, opp.col
     my_moves = 0
@@ -83,26 +99,51 @@ def evaluate(game_state, maximizing_player_id: int) -> float:
                 and not (nr == mr and nc == mc)):
             opp_moves += 1
 
-    mobility_diff = my_moves - opp_moves
-
-    # 5. Blocking advantage
-    blocking_advantage = max(0, 4 - opp_moves)
-
-    # 6. Self-trap risk
-    if my_moves <= 1:
-        trap_risk = 1.0
+    # Self-trap penalty (strong) — don't get boxed in
+    if my_moves == 0:
+        trap_penalty = 25.0
+    elif my_moves == 1:
+        trap_penalty = 10.0
     elif my_moves == 2:
-        trap_risk = 0.3
+        trap_penalty = 3.0
     else:
-        trap_risk = 0.0
+        trap_penalty = 0.0
+
+    # 5. Blocking reward — scale with how boxed the opponent is
+    #    0 moves → huge reward, 1 move → good, 2 → mild
+    if opp_moves == 0:
+        blocking_bonus = 15.0
+    elif opp_moves == 1:
+        blocking_bonus = 8.0
+    elif opp_moves == 2:
+        blocking_bonus = 3.0
+    else:
+        blocking_bonus = 0.0
+
+    # 6. Opponent-path disruption — reward if opponent is far from
+    #    the nearest treasure (i.e. blocking is working)
+    nearest_opp_treasure_dist = 999
+    for t in game_state.treasures:
+        tp = (t.row, t.col)
+        d = opp_dists.get(tp, 999)
+        if d < nearest_opp_treasure_dist:
+            nearest_opp_treasure_dist = d
+    if nearest_opp_treasure_dist < 999:
+        path_disruption = nearest_opp_treasure_dist * 0.5
+    else:
+        path_disruption = 10.0  # opponent completely cut off
+
+    # 7. Collection progress bonus
+    collection_diff = me.collected_count - opp.collected_count
 
     return (
-        10.0 * score_diff
-        - 2.0 * my_dist_best
-        + 2.0 * opp_dist_best
-        + 3.0 * mobility_diff
-        + 5.0 * blocking_advantage
-        - 8.0 * trap_risk
+        10.0 * score_diff           # Collected score is king
+        + 2.5 * treasure_diff       # Prefer positions closer to treasures
+        + 2.0 * race_advantage      # Prefer being closer than opponent
+        + blocking_bonus            # Reward boxing opponent in
+        + path_disruption           # Reward increasing opponent's path length
+        - trap_penalty              # Don't self-trap
+        + 3.0 * collection_diff     # Reward collecting more items
     )
 
 
