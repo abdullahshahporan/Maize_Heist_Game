@@ -1,0 +1,15 @@
+{
+  "timestamp": "2026-03-07T09:38:01.815557",
+  "game_mode": "ai_vs_ai",
+  "difficulty": "easy",
+  "winner": "A* Tactical AI",
+  "end_reason": "Game ended",
+  "player1_score": 20,
+  "player2_score": 35,
+  "total_turns": 20,
+  "total_rounds": 10,
+  "player1_treasures": 3,
+  "player2_treasures": 3,
+  "player1_walls_placed": 5,
+  "player2_walls_placed": 0
+}
