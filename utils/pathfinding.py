@@ -125,7 +125,7 @@ def bfs_all_distances(board: Board, start: tuple,
 def bfs_distance_from_grid(grid, rows: int, cols: int,
                            start: tuple, goal: tuple) -> int:
     """Lightweight BFS using raw grid — no Board object needed.
-    Used by tactical_blocker to avoid constructing Board clones."""
+    Used by wall_logic to avoid constructing Board clones."""
     if start == goal:
         return 0
     visited = {start}

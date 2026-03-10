@@ -1,10 +1,11 @@
 """
-heuristics.py — Board evaluation for Minimax with wall-aware race scoring.
+heuristics.py — Aggressive board evaluation for Minimax.
 
-Key design: race_score uses a continuous lead * value / proximity formula so
-that walls which increase opponent BFS distances yield measurable evaluation
-gain.  Blocking and mobility terms are strong enough to justify wall placements
-when they create chokepoints or disrupt opponent treasure access.
+Key design:
+- Heavy score_diff weight so Minimax always prioritizes point collection
+- Strong race_score with wall-aware BFS to justify blocking walls
+- Boosted blocking bonuses to reward trapping the opponent
+- Endgame urgency: when few treasures remain, aggression increases
 """
 
 from collections import deque
@@ -66,13 +67,16 @@ def evaluate(game_state, maximizing_player_id):
         if me_can and opp_can:
             lead = d_opp - d_me  # positive = I'm closer
             weight = t.value / (min(d_me, d_opp) + 1)
-            race_score += lead * weight
+            race_score += lead * weight * 1.3
+            # Extra tempo bonus: if I'm strictly closer, I capture first
+            if d_me < d_opp:
+                race_score += t.value * 0.5
         elif me_can:
             # Opponent cut off from this treasure — big advantage
-            race_score += t.value * 3.0
+            race_score += t.value * 4.0
         elif opp_can:
             # I'm cut off — big disadvantage
-            race_score -= t.value * 3.0
+            race_score -= t.value * 4.0
 
     # Average distance comparison: walls increase opponent's avg distance
     avg_my = total_my_dist / max(my_reachable, 1)
@@ -85,21 +89,21 @@ def evaluate(game_state, maximizing_player_id):
 
     # Trap avoidance
     if my_moves == 0:
-        trap_penalty = 30.0
+        trap_penalty = 35.0
     elif my_moves == 1:
-        trap_penalty = 12.0
+        trap_penalty = 14.0
     elif my_moves == 2:
-        trap_penalty = 3.0
+        trap_penalty = 3.5
     else:
         trap_penalty = 0.0
 
     # Blocking reward — walls directly reduce opponent mobility
     if opp_moves == 0:
-        blocking_bonus = 12.0
+        blocking_bonus = 18.0
     elif opp_moves == 1:
-        blocking_bonus = 6.0
+        blocking_bonus = 9.0
     elif opp_moves == 2:
-        blocking_bonus = 2.0
+        blocking_bonus = 3.5
     else:
         blocking_bonus = 0.0
 
@@ -107,16 +111,24 @@ def evaluate(game_state, maximizing_player_id):
     reachable_diff = my_reachable - opp_reachable
     control = len(my_dists) - len(opp_dists)
 
+    # ── Endgame urgency ─────────────────────────────
+    n_treasures = len(game_state.treasures)
+    urgency = 1.0
+    if n_treasures <= 3:
+        urgency = 1.6
+    elif n_treasures <= 6:
+        urgency = 1.25
+
     return (
-        8.0 * score_diff
-        + 2.0 * race_score
-        + 0.6 * dist_advantage
-        + 3.0 * reachable_diff
-        + 0.08 * control
-        + blocking_bonus
-        + 1.0 * (my_moves - opp_moves)
+        10.0 * score_diff
+        + 2.8 * race_score * urgency
+        + 0.8 * dist_advantage
+        + 3.5 * reachable_diff
+        + 0.10 * control
+        + blocking_bonus * 1.2
+        + 1.4 * (my_moves - opp_moves)
         - trap_penalty
-        + 2.0 * collection_diff
+        + 2.5 * collection_diff
     )
 
 

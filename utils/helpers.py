@@ -18,6 +18,3 @@ class Timer:
     def __exit__(self, *args):
         self.elapsed = time.perf_counter() - self._start
 
-
-def clamp(value, lo, hi):
-    return max(lo, min(hi, value))

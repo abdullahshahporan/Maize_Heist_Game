@@ -1,11 +1,11 @@
 """
-minimax_agent.py — Root driver for Minimax + Alpha-Beta.
+minimax_agent.py — Aggressive Minimax + Alpha-Beta driver.
 
-Changes:
-- keeps iterative deepening
-- reuses TT across iterative depths
-- slightly stronger treasure-first shortcut
-- narrower aspiration window growth
+Design:
+- Instant-capture at value >= 5 (cash and above — never miss free points)
+- Urgency: searches deeper (+1) when falling behind
+- Tighter aspiration windows for faster convergence
+- Iterative deepening with TT reuse across depths
 """
 
 from config import DIFFICULTY_SETTINGS
@@ -13,18 +13,24 @@ from game.actions import ACTION_MOVE
 from ai.alphabeta import alphabeta, clear_transposition_table, _order_actions
 
 
-ASPIRATION_BASE = 24.0
+ASPIRATION_BASE = 20.0
 
 
 def choose_action_minimax(game_state, difficulty):
     depth = DIFFICULTY_SETTINGS[difficulty]["minimax_depth"]
     player = game_state.get_current_player()
+    opponent = game_state.get_opponent()
     actions = game_state.get_all_actions()
 
     if not actions:
         return None
     if len(actions) == 1:
         return actions[0]
+
+    # ── Urgency: search deeper when behind ────────────
+    score_diff = player.score - opponent.score
+    if score_diff < -10:
+        depth = min(depth + 1, 6)
 
     treasure_values = {(t.row, t.col): t.value for t in game_state.treasures}
     best_capture = None
@@ -36,8 +42,8 @@ def choose_action_minimax(game_state, difficulty):
                 best_capture_val = value
                 best_capture = action
 
-    # Instant-capture gold/diamond — always take high-value treasures.
-    if best_capture and best_capture_val >= 10:
+    # Instant-capture any treasure (cash=5+) — never miss free points
+    if best_capture and best_capture_val >= 5:
         return best_capture
 
     actions = _order_actions(actions, game_state)
@@ -48,7 +54,7 @@ def choose_action_minimax(game_state, difficulty):
 
     for current_depth in range(1, depth + 1):
         if current_depth >= 2:
-            window = ASPIRATION_BASE + current_depth * 3.0
+            window = ASPIRATION_BASE + current_depth * 2.5
             alpha = prev_value - window
             beta = prev_value + window
         else:

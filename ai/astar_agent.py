@@ -1,21 +1,17 @@
 """
-astar_agent.py — Stronger and faster A* + tactical controller.
+astar_agent.py — A* + tactical controller for treasure racing.
 
-Main improvements:
-- uses exact BFS distances for full-maze treasure evaluation
-- considers the whole reachable maze through treasure-potential scoring
-- keeps wall usage available, but prefers efficient treasure racing
-- biases toward A* winning more often by prioritising capture tempo
+Uses astar_wall_helper for wall placement decisions and wall_logic
+for core wall evaluation. Movement logic stays here.
 """
 
-from game.actions import Action, ACTION_MOVE, ACTION_PLACE_WALL
+from game.actions import Action, ACTION_MOVE
 from game.board import CELL_EMPTY
 from game.rules import get_valid_moves
 from utils.pathfinding import astar, bfs_all_distances
-from ai.tactical_blocker import evaluate_wall_placements
+from ai.astar_wall_helper import choose_wall_action
 
 _DIRS = ((-1, 0), (1, 0), (0, -1), (0, 1))
-_WALL_BASE_THRESHOLD = 2.5
 _CAPTURE_WIN_SCORE = 1000.0
 
 
@@ -164,38 +160,13 @@ def choose_action_astar(game_state):
     if immediate_capture:
         return best_move_action
 
-    wall_options = evaluate_wall_placements(
-        game_state,
-        self_dists_before=my_dists,
-        opp_dists_before=opp_dists,
-        max_candidates=6,
-    )
-    best_wall_action = None
-    best_wall_utility = float("-inf")
-    if wall_options:
-        best_wall_pos, best_wall_utility = wall_options[0]
-        best_wall_action = Action(ACTION_PLACE_WALL, best_wall_pos)
-
-    score_diff = player.score - opponent.score
-    wall_threshold = _WALL_BASE_THRESHOLD
-    if score_diff < -15:
-        wall_threshold = 1.2
-    elif score_diff < -5:
-        wall_threshold = 1.8
-    elif score_diff > 10:
-        wall_threshold = 3.5
-
-    # Place wall only when utility clearly exceeds threshold and
-    # the tactical gain justifies skipping a move.
-    if (best_wall_action
-            and best_wall_utility > wall_threshold
-            and best_wall_utility > 0.06 * best_move_score):
-        return best_wall_action
+    # Wall decision via A* enhanced helper
+    wall_action = choose_wall_action(game_state, my_dists, opp_dists, best_move_score)
+    if wall_action is not None:
+        return wall_action
 
     if best_move_action is not None:
         return best_move_action
-    if best_wall_action is not None:
-        return best_wall_action
 
     actions = game_state.get_all_actions()
     return actions[0] if actions else None
