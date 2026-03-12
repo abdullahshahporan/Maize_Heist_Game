@@ -12,6 +12,29 @@ from ai.wall_logic import evaluate_wall_placements
 _WALL_BASE_THRESHOLD = 2.5
 
 
+def _score_opponent_target(treasure, my_dists, opp_dists):
+    tp = (treasure.row, treasure.col)
+    d_opp = opp_dists.get(tp, 10**9)
+    if d_opp == 10**9:
+        return float("-inf")
+
+    d_me = my_dists.get(tp, 10**9)
+    score = (treasure.value * 2.4) / (d_opp + 1)
+    if d_me == 10**9:
+        score += treasure.value * 1.6
+    else:
+        gap = d_me - d_opp
+        if gap >= 2:
+            score += treasure.value * 1.5
+        elif gap >= 0:
+            score += treasure.value * 0.8
+        elif gap >= -2:
+            score += treasure.value * 0.35
+        else:
+            score -= treasure.value * 0.2
+    return score
+
+
 def find_blocking_wall_on_path(game_state, my_dists, opp_dists):
     """Use A* to find the opponent's path to their nearest treasure,
     then check if we can place a wall that blocks that path.
@@ -26,17 +49,16 @@ def find_blocking_wall_on_path(game_state, my_dists, opp_dists):
     if not treasures:
         return None
 
-    # Find opponent's best target via A*
+    # Find opponent's most dangerous target: valuable and likely theirs first.
     best_opp_target = None
-    best_opp_dist = 10**9
+    best_opp_score = float("-inf")
     for t in treasures:
-        tp = (t.row, t.col)
-        d = opp_dists.get(tp, 10**9)
-        if d < best_opp_dist:
-            best_opp_dist = d
+        target_score = _score_opponent_target(t, my_dists, opp_dists)
+        if target_score > best_opp_score:
+            best_opp_score = target_score
             best_opp_target = t
 
-    if best_opp_target is None or best_opp_dist >= 10**9:
+    if best_opp_target is None or best_opp_score == float("-inf"):
         return None
 
     # Get opponent's A* path to their best target
@@ -68,6 +90,12 @@ def find_blocking_wall_on_path(game_state, my_dists, opp_dists):
                 if step == wp:
                     utility += max(0, 5 - i) * 0.5
                     break
+            d_me = my_dists.get(best_opp_target.pos, 10**9)
+            d_opp = opp_dists.get(best_opp_target.pos, 10**9)
+            if d_me == 10**9:
+                utility += best_opp_target.value * 1.2
+            elif d_opp < d_me:
+                utility += best_opp_target.value * 0.9
             if utility > best_utility:
                 best_utility = utility
                 best_wall = wp

@@ -16,6 +16,7 @@ from ai.heuristics import evaluate
 _DIRS_AB = ((-1, 0), (1, 0), (0, -1), (0, 1))
 
 _tt = {}
+_history = {}
 _TT_EXACT = 0
 _TT_LOWER = 1
 _TT_UPPER = 2
@@ -24,6 +25,11 @@ _TT_MAX_SIZE = 200000
 
 def clear_transposition_table():
     _tt.clear()
+    _history.clear()
+
+
+def _action_key(action):
+    return (action.action_type, action.target)
 
 
 def _temp_wall_signature(game_state):
@@ -31,8 +37,8 @@ def _temp_wall_signature(game_state):
     if not walls:
         return ()
     sig = []
-    for w in walls:
-        sig.append((w.row, w.col, getattr(w, "remaining_rounds", 0)))
+    for wall in walls:
+        sig.append((wall.row, wall.col, getattr(wall, "remaining_rounds", 0)))
     sig.sort()
     return tuple(sig)
 
@@ -42,19 +48,14 @@ def _treasure_signature(game_state):
     if not treasures:
         return ()
     sig = []
-    for t in treasures:
-        sig.append((t.row, t.col, getattr(t, "value", 0)))
+    for treasure in treasures:
+        sig.append((treasure.row, treasure.col, getattr(treasure, "value", 0)))
     sig.sort()
     return tuple(sig)
 
 
 def _tt_key(game_state):
-    """Safe TT key.
-
-    The old key only used len(treasures) + board hash, which can alias
-    different treasure layouts or temp-wall timers. This key keeps the
-    table correct while staying compact for a 12x12 board.
-    """
+    """Safe TT key for cached search results."""
     cached = getattr(game_state, "_ab_tt_key", None)
     if cached is not None:
         return cached
@@ -83,14 +84,11 @@ def _tt_key(game_state):
 
 
 def _order_actions(actions, game_state):
-    """Strategic ordering: captures → quiet moves → walls by quality.
-
-    Wall quality considers chokepoint value (adjacent wall count) and
-    proximity to contested treasures.  Walls stay after moves for good
-    alpha-beta pruning, but the best wall is ordered first among walls.
-    """
-    treasure_values = {(t.row, t.col): t.value for t in game_state.treasures}
+    """Strategic ordering: captures → quiet moves → walls by quality."""
+    treasure_values = game_state.get_treasure_value_map()
+    player = game_state.get_current_player()
     opp = game_state.get_opponent()
+    pr, pc = player.row, player.col
     opr, opc = opp.row, opp.col
     grid = game_state.board.grid
     rows = game_state.board.rows
@@ -101,53 +99,74 @@ def _order_actions(actions, game_state):
     walls = []
 
     for action in actions:
+        history = _history.get(_action_key(action), 0)
         if action.action_type == ACTION_MOVE:
             value = treasure_values.get(action.target, 0)
             if value:
-                capture_moves.append((-value, action.target, action))
-            else:
-                quiet_moves.append(action)
-        else:
-            wr, wc = action.target
-            # Chokepoint: more adjacent walls = narrower corridor = more impact
-            adj_walls = 0
-            for dr, dc in _DIRS_AB:
-                nr, nc = wr + dr, wc + dc
-                if 0 <= nr < rows and 0 <= nc < cols and grid[nr][nc] != CELL_EMPTY:
-                    adj_walls += 1
-            dist_to_opp = abs(wr - opr) + abs(wc - opc)
-            treasure_nearby = 0
+                capture_moves.append((-(value * 100 + history), action.target, action))
+                continue
+
+            mr, mc = action.target
+            treasure_pull = 0.0
             for (tr, tc), tv in treasure_values.items():
-                if abs(wr - tr) + abs(wc - tc) <= 2:
-                    treasure_nearby += tv
-            quality = adj_walls * 5 + treasure_nearby - dist_to_opp
-            walls.append((-quality, action.target, action))
+                dist = abs(mr - tr) + abs(mc - tc)
+                if dist <= 5:
+                    treasure_pull += tv / (dist + 1)
+
+            mobility = 0
+            for dr, dc in _DIRS_AB:
+                nr, nc = mr + dr, mc + dc
+                if (
+                    0 <= nr < rows
+                    and 0 <= nc < cols
+                    and grid[nr][nc] == CELL_EMPTY
+                    and not (nr == opr and nc == opc)
+                ):
+                    mobility += 1
+
+            center_bias = abs(mr - rows // 2) + abs(mc - cols // 2)
+            step_gain = abs(pr - mr) + abs(pc - mc)
+            score = treasure_pull * 10.0 + mobility * 4.0 + step_gain - center_bias
+            quiet_moves.append((-(score + history * 0.02), action.target, action))
+            continue
+
+        wr, wc = action.target
+        adj_walls = 0
+        for dr, dc in _DIRS_AB:
+            nr, nc = wr + dr, wc + dc
+            if 0 <= nr < rows and 0 <= nc < cols and grid[nr][nc] != CELL_EMPTY:
+                adj_walls += 1
+
+        dist_to_opp = abs(wr - opr) + abs(wc - opc)
+        treasure_nearby = 0
+        for (tr, tc), tv in treasure_values.items():
+            if abs(wr - tr) + abs(wc - tc) <= 2:
+                treasure_nearby += tv
+
+        quality = adj_walls * 5 + treasure_nearby - dist_to_opp + history * 0.03
+        walls.append((-quality, action.target, action))
 
     capture_moves.sort()
+    quiet_moves.sort()
     walls.sort()
 
-    result = [a for _, __, a in capture_moves]
-    result.extend(quiet_moves)
-    result.extend(a for _, __, a in walls)
+    result = [action for _, __, action in capture_moves]
+    result.extend(action for _, __, action in quiet_moves)
+    result.extend(action for _, __, action in walls)
     return result
 
 
-def _beam_actions(actions, game_state, max_walls=2):
-    """Keep all move actions and top-K walls, preserving strategic ordering.
-
-    _order_actions places the best wall before quiet moves; this preserves
-    that interleaving while capping total wall count.
-    """
+def _beam_actions(actions, game_state, max_walls=3):
+    """Keep all move actions and top-K walls, preserving strategic ordering."""
     ordered = _order_actions(actions, game_state)
     result = []
     wall_count = 0
     for action in ordered:
         if action.action_type == ACTION_MOVE:
             result.append(action)
-        else:
-            if wall_count < max_walls:
-                result.append(action)
-                wall_count += 1
+        elif wall_count < max_walls:
+            result.append(action)
+            wall_count += 1
     return result
 
 
@@ -173,9 +192,8 @@ def alphabeta(game_state, depth, alpha, beta, maximizing, maximizing_player_id):
     if not actions:
         return evaluate(game_state, maximizing_player_id)
 
-    # Wider tree near leaf, narrower tree earlier when branching hurts most.
     if depth >= 3 and len(actions) > 6:
-        actions = _beam_actions(actions, game_state, max_walls=2)
+        actions = _beam_actions(actions, game_state, max_walls=3)
     else:
         actions = _order_actions(actions, game_state)
 
@@ -193,6 +211,7 @@ def alphabeta(game_state, depth, alpha, beta, maximizing, maximizing_player_id):
             if value > alpha:
                 alpha = value
             if alpha >= beta:
+                _history[_action_key(action)] = _history.get(_action_key(action), 0) + depth * depth
                 break
     else:
         value = float("inf")
@@ -205,6 +224,7 @@ def alphabeta(game_state, depth, alpha, beta, maximizing, maximizing_player_id):
             if value < beta:
                 beta = value
             if alpha >= beta:
+                _history[_action_key(action)] = _history.get(_action_key(action), 0) + depth * depth
                 break
 
     if len(_tt) < _TT_MAX_SIZE:

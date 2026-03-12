@@ -32,7 +32,10 @@ def choose_action_minimax(game_state, difficulty):
     if score_diff < -10:
         depth = min(depth + 1, 6)
 
-    treasure_values = {(t.row, t.col): t.value for t in game_state.treasures}
+    if len(actions) <= 3 or len(game_state.treasures) <= 4:
+        depth = min(depth + 1, 7)
+
+    treasure_values = game_state.get_treasure_value_map()
     best_capture = None
     best_capture_val = 0
     for action in actions:
@@ -49,6 +52,12 @@ def choose_action_minimax(game_state, difficulty):
     actions = _order_actions(actions, game_state)
     clear_transposition_table()
 
+    root_children = []
+    for action in actions:
+        child = game_state.clone()
+        child.apply_action(action)
+        root_children.append((action, child))
+
     best_action = actions[0]
     prev_value = 0.0
 
@@ -64,9 +73,7 @@ def choose_action_minimax(game_state, difficulty):
         current_best_action = actions[0]
         current_best_value = float("-inf")
 
-        for action in actions:
-            child = game_state.clone()
-            child.apply_action(action)
+        for action, child in root_children:
             value = alphabeta(child, current_depth - 1, alpha, beta, False, player.id)
             if value > current_best_value:
                 current_best_value = value
@@ -74,9 +81,7 @@ def choose_action_minimax(game_state, difficulty):
 
         if current_best_value <= alpha or current_best_value >= beta:
             current_best_value = float("-inf")
-            for action in actions:
-                child = game_state.clone()
-                child.apply_action(action)
+            for action, child in root_children:
                 value = alphabeta(child, current_depth - 1, float("-inf"), float("inf"), False, player.id)
                 if value > current_best_value:
                     current_best_value = value
@@ -85,9 +90,11 @@ def choose_action_minimax(game_state, difficulty):
         best_action = current_best_action
         prev_value = current_best_value
 
-        if best_action in actions:
-            actions.remove(best_action)
-            actions.insert(0, best_action)
+        if best_action != root_children[0][0]:
+            for index, (action, child) in enumerate(root_children):
+                if action == best_action:
+                    root_children.insert(0, root_children.pop(index))
+                    break
 
         if current_best_value >= 9000.0:
             break

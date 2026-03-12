@@ -24,7 +24,8 @@ class GameState:
                  'current_player_index', 'turn_count', 'round_count',
                  'game_mode', 'difficulty', 'game_over', 'winner',
                  'end_reason', 'wall_placements', '_is_simulation',
-                 '_logged')
+                 '_logged', '_ab_tt_key', '_cached_actions',
+                 '_distance_cache', '_treasure_value_map')
 
     def __init__(self, board: Board, player1: Player, player2: Player,
                  treasures: list, game_mode: str, difficulty: str):
@@ -47,6 +48,10 @@ class GameState:
         self.wall_placements = {1: 0, 2: 0}
         self._is_simulation = False  # True for AI clones — skips spawning
         self._logged = False
+        self._ab_tt_key = None
+        self._cached_actions = None
+        self._distance_cache = {}
+        self._treasure_value_map = None
 
     # ── Player accessors ────────────────────────────────
     def get_current_player(self) -> Player:
@@ -67,10 +72,29 @@ class GameState:
 
     def get_all_actions(self, player: Player = None):
         if player is None:
+            if self._cached_actions is not None:
+                return list(self._cached_actions)
             player = self.get_current_player()
         opponent = self.player2 if player.id == 1 else self.player1
-        return get_all_actions(self.board, player, opponent, self.treasures,
-                               self.temp_walls)
+        actions = get_all_actions(self.board, player, opponent, self.treasures,
+                                  self.temp_walls)
+        if player is self.get_current_player():
+            self._cached_actions = tuple(actions)
+        return actions
+
+    def get_treasure_value_map(self):
+        if self._treasure_value_map is None:
+            self._treasure_value_map = {
+                (treasure.row, treasure.col): treasure.value
+                for treasure in self.treasures
+            }
+        return self._treasure_value_map
+
+    def _invalidate_caches(self):
+        self._ab_tt_key = None
+        self._cached_actions = None
+        self._distance_cache.clear()
+        self._treasure_value_map = None
 
     # ── Apply action ────────────────────────────────────
     def apply_action(self, action: Action):
@@ -112,6 +136,7 @@ class GameState:
 
         # Switch turn
         self.current_player_index = 1 - self.current_player_index
+        self._invalidate_caches()
 
         # Check terminal conditions
         self._check_terminal()
@@ -239,4 +264,8 @@ class GameState:
                                2: self.wall_placements[2]}
         gs._is_simulation = True  # AI clones skip spawning
         gs._logged = False
+        gs._ab_tt_key = None
+        gs._cached_actions = None
+        gs._distance_cache = {}
+        gs._treasure_value_map = None
         return gs

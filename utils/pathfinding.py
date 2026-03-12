@@ -122,6 +122,26 @@ def bfs_all_distances(board: Board, start: tuple,
     return visited
 
 
+def bfs_all_distances_from_grid(grid, rows: int, cols: int,
+                                start: tuple) -> dict:
+    """BFS from start using a raw grid, returning all reachable distances."""
+    visited = {start: 0}
+    queue = deque()
+    queue.append((start[0], start[1], 0))
+
+    while queue:
+        r, c, dist = queue.popleft()
+        next_dist = dist + 1
+        for dr, dc in _DIRS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols:
+                nb = (nr, nc)
+                if nb not in visited and grid[nr][nc] == CELL_EMPTY:
+                    visited[nb] = next_dist
+                    queue.append((nr, nc, next_dist))
+    return visited
+
+
 def bfs_distance_from_grid(grid, rows: int, cols: int,
                            start: tuple, goal: tuple) -> int:
     """Lightweight BFS using raw grid — no Board object needed.

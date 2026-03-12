@@ -7,9 +7,10 @@ used by both Minimax (via heuristics) and the A* agent.
 
 from game.board import CELL_EMPTY, CELL_TEMP_WALL
 from game.rules import get_valid_wall_positions
-from utils.pathfinding import bfs_all_distances, bfs_distance_from_grid
+from utils.pathfinding import bfs_all_distances, bfs_all_distances_from_grid
 
 _DIRS = ((-1, 0), (1, 0), (0, -1), (0, 1))
+_INF = 10 ** 9
 
 
 # ── Chokepoint detection ──────────────────────────────
@@ -90,8 +91,75 @@ def score_treasure_importance(treasure, self_dists, opp_dists):
     d_opp = opp_dists.get(tp, 10**9)
     if d_opp == 10**9:
         return 0.0
-    contested = 1.0 if abs(d_me - d_opp) <= 3 else 0.4
-    return treasure.value * contested / (d_opp + 1)
+
+    if d_me == 10**9:
+        race_factor = 2.4
+    else:
+        gap = d_me - d_opp
+        if gap >= 3:
+            race_factor = 2.2
+        elif gap >= 1:
+            race_factor = 1.8
+        elif gap >= -2:
+            race_factor = 1.2
+        else:
+            race_factor = 0.45
+    return treasure.value * race_factor / (d_opp + 1)
+
+
+def shortest_path_block_bonus(wall_pos, treasures, self_dists_before,
+                              opp_dists_before, self_dists_after,
+                              opp_dists_after, wall_dists_before):
+    """Reward walls that sit on the opponent's shortest route to key treasures."""
+    d_opp_to_wall = opp_dists_before.get(wall_pos, _INF)
+    if d_opp_to_wall >= _INF:
+        return 0.0
+
+    bonus = 0.0
+    for treasure in treasures:
+        tp = (treasure.row, treasure.col)
+        d_opp_b = opp_dists_before.get(tp, _INF)
+        if d_opp_b >= _INF:
+            continue
+
+        d_wall_to_treasure = wall_dists_before.get(tp, _INF)
+        if d_wall_to_treasure >= _INF:
+            continue
+
+        if d_opp_to_wall + d_wall_to_treasure != d_opp_b:
+            continue
+
+        d_self_b = self_dists_before.get(tp, _INF)
+        d_opp_a = opp_dists_after.get(tp, _INF)
+        d_self_a = self_dists_after.get(tp, _INF)
+
+        opp_delta = 6 if d_opp_a >= _INF else max(0, d_opp_a - d_opp_b)
+        if opp_delta <= 0:
+            continue
+
+        self_delta = 0
+        if d_self_b < _INF and d_self_a < _INF:
+            self_delta = max(0, d_self_a - d_self_b)
+
+        contested = 1.0
+        if d_self_b >= _INF:
+            contested = 1.5
+        elif d_self_b - d_opp_b >= 2:
+            contested = 1.7
+        elif abs(d_self_b - d_opp_b) <= 2:
+            contested = 1.25
+        elif d_self_b < d_opp_b - 2:
+            contested = 0.55
+
+        swing_bonus = 0.0
+        if d_self_b < _INF and d_opp_a < _INF and d_opp_b < d_self_b <= d_opp_a:
+            swing_bonus = treasure.value * 0.9
+        elif d_opp_a >= _INF:
+            swing_bonus = treasure.value * 1.2
+
+        bonus += treasure.value * contested * max(0.0, opp_delta - 0.55 * self_delta)
+        bonus += swing_bonus
+    return bonus
 
 
 # ── Shortlist best wall candidates ───────────────────
@@ -166,9 +234,12 @@ def evaluate_wall_placements(game_state, self_dists_before=None,
     results = []
 
     for wr, wc in wall_positions:
+        wall_dists_before = bfs_all_distances_from_grid(grid, rows, cols, (wr, wc))
         grid[wr][wc] = CELL_TEMP_WALL
 
         choke = chokepoint_score(grid, rows, cols, (wr, wc), opponent.pos)
+        opp_dists_after = bfs_all_distances_from_grid(grid, rows, cols, opponent.pos)
+        self_dists_after = bfs_all_distances_from_grid(grid, rows, cols, player.pos)
 
         opp_delay = 0.0
         self_penalty = 0.0
@@ -179,8 +250,8 @@ def evaluate_wall_placements(game_state, self_dists_before=None,
 
             d_opp_b = opp_dists_before.get(tp, -1)
             d_self_b = self_dists_before.get(tp, -1)
-            d_opp_a = bfs_distance_from_grid(grid, rows, cols, opponent.pos, tp)
-            d_self_a = bfs_distance_from_grid(grid, rows, cols, player.pos, tp)
+            d_opp_a = opp_dists_after.get(tp, -1)
+            d_self_a = self_dists_after.get(tp, -1)
 
             if d_opp_b >= 0:
                 if d_opp_a >= 0:
@@ -196,9 +267,19 @@ def evaluate_wall_placements(game_state, self_dists_before=None,
 
             cutoff += opponent_cutoff_bonus(d_opp_b, d_opp_a, t.value)
 
+        path_bonus = shortest_path_block_bonus(
+            (wr, wc),
+            important_treasures,
+            self_dists_before,
+            opp_dists_before,
+            self_dists_after,
+            opp_dists_after,
+            wall_dists_before,
+        )
+
         grid[wr][wc] = CELL_EMPTY
 
-        utility = opp_delay - self_penalty + choke + cutoff
+        utility = opp_delay - self_penalty + choke + cutoff + path_bonus
         results.append(((wr, wc), utility))
 
     results.sort(key=lambda x: x[1], reverse=True)

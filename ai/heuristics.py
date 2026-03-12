@@ -15,6 +15,19 @@ _DIRS = ((-1, 0), (1, 0), (0, -1), (0, 1))
 _INF = 10 ** 9
 
 
+def _cached_bfs(game_state, row, col):
+    cache = getattr(game_state, "_distance_cache", None)
+    key = (row, col)
+    if cache is not None and key in cache:
+        return cache[key]
+
+    board = game_state.board
+    dists = _fast_bfs(board.grid, board.rows, board.cols, row, col)
+    if cache is not None:
+        cache[key] = dists
+    return dists
+
+
 def evaluate(game_state, maximizing_player_id):
     if game_state.game_over:
         winner = game_state.winner
@@ -34,8 +47,8 @@ def evaluate(game_state, maximizing_player_id):
     rows = board.rows
     cols = board.cols
 
-    my_dists = _fast_bfs(grid, rows, cols, me.row, me.col)
-    opp_dists = _fast_bfs(grid, rows, cols, opp.row, opp.col)
+    my_dists = _cached_bfs(game_state, me.row, me.col)
+    opp_dists = _cached_bfs(game_state, opp.row, opp.col)
 
     score_diff = me.score - opp.score
     collection_diff = getattr(me, "collected_count", 0) - getattr(opp, "collected_count", 0)
