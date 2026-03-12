@@ -7,11 +7,20 @@ from game.actions import Action, ACTION_MOVE, ACTION_PLACE_WALL
 from game.rules import get_valid_moves, get_valid_wall_positions
 from ui.renderer import cell_from_pixel
 
+# Direction mapping for quick wall placement keys
+_WALL_DIR_KEYS = {
+    pygame.K_t: (-1, 0),   # Top
+    pygame.K_b: (1, 0),    # Bottom
+    pygame.K_l: (0, -1),   # Left
+    pygame.K_r: (0, 1),    # Right
+}
+
 
 class HumanInputHandler:
     """
     Manages human player input during their turn.
-    Supports arrow-key / WASD movement and wall placement mode (E key).
+    Supports arrow-key / WASD movement, wall placement mode (E key),
+    and quick directional wall placement (T/B/L/R).
     """
 
     def __init__(self):
@@ -57,7 +66,20 @@ class HumanInputHandler:
                 self.wall_highlights = []
                 return None
 
-            # Movement keys
+            # Quick directional wall placement: T/B/L/R
+            if event.key in _WALL_DIR_KEYS:
+                dr, dc = _WALL_DIR_KEYS[event.key]
+                target = (player.row + dr, player.col + dc)
+                valid_walls = get_valid_wall_positions(
+                    game_state.board, player, opponent,
+                    game_state.treasures, game_state.temp_walls,
+                )
+                if target in valid_walls:
+                    self.reset()
+                    return Action(ACTION_PLACE_WALL, target)
+                return None
+
+            # Movement keys (only when not in wall mode)
             if not self.wall_mode:
                 direction = None
                 if event.key in (pygame.K_UP, pygame.K_w):

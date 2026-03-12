@@ -12,6 +12,7 @@ from config import (
     COLOR_CASH, COLOR_GOLD, COLOR_DIAMOND,
     COLOR_GRID_LINE, COLOR_TEXT, COLOR_PANEL_BG,
     COLOR_TURN_INDICATOR, COLOR_WALL_MODE, COLOR_HIGHLIGHT,
+    TREASURE_VALUES, MODE_AI_VS_HUMAN,
 )
 from game.board import CELL_PERM_WALL, CELL_TEMP_WALL
 from ui.asset_manager import assets
@@ -47,6 +48,30 @@ def _blit_centered(surface, sprite, rect):
     surface.blit(sprite, sprite.get_rect(center=rect.center))
 
 
+def _draw_keycap(surface, text, x, y, w=24, h=20):
+    """Draw a styled keyboard key cap."""
+    pygame.draw.rect(surface, (12, 14, 20),
+                     pygame.Rect(x + 1, y + 2, w, h), border_radius=4)
+    key = pygame.Rect(x, y, w, h)
+    pygame.draw.rect(surface, (50, 55, 70), key, border_radius=4)
+    pygame.draw.rect(surface, (85, 90, 105), key, 1, border_radius=4)
+    fsize = 10 if len(text) > 2 else (11 if len(text) > 1 else 12)
+    font = pygame.font.SysFont("consolas", fsize, bold=True)
+    txt = font.render(text, True, (215, 220, 230))
+    surface.blit(txt, txt.get_rect(center=key.center))
+
+
+def _draw_panel_section(surface, title, x, y, w):
+    """Draw a section header with accent-colored title and divider."""
+    font = pygame.font.SysFont("consolas", 12, bold=True)
+    txt = font.render(title, True, _CLR_ACCENT)
+    surface.blit(txt, (x, y))
+    line_y = y + 16
+    pygame.draw.line(surface, _CLR_PANEL_BORDER,
+                     (x - 2, line_y), (x + w, line_y), 1)
+    return line_y + 5
+
+
 # ── Top header bar ──────────────────────────────────────
 def _draw_header(surface, game_state):
     """Draw a clean header bar with player info and turn/round text."""
@@ -71,20 +96,23 @@ def _draw_header(surface, game_state):
         x += 38
     p1_name = font.render(game_state.player1.name, True, _CLR_P1)
     surface.blit(p1_name, (x, mid_y - 20))
-    p1_score = font.render(f"Score: {game_state.player1.score}", True, COLOR_TEXT)
+    p1_score_str = f"Score: {game_state.player1.score}"
+    p1_score = font.render(p1_score_str, True, COLOR_TEXT)
     surface.blit(p1_score, (x, mid_y + 2))
 
-    # ── Right: P2 info ──────────────────────────────────
+    # ── Right: P2 info (right-align based on widest text) ──
     p2s = assets.get("player2")
     p2_name_str = game_state.player2.name
-    p2_txt = font.render(p2_name_str, True, _CLR_P2)
-    rx = WINDOW_WIDTH - p2_txt.get_width() - 14
+    p2_score_str = f"Score: {game_state.player2.score}"
+    p2_name_surf = font.render(p2_name_str, True, _CLR_P2)
+    p2_score_surf = font.render(p2_score_str, True, COLOR_TEXT)
+    max_w = max(p2_name_surf.get_width(), p2_score_surf.get_width())
+    rx = WINDOW_WIDTH - max_w - 14
     if p2s:
         small_p2 = pygame.transform.smoothscale(p2s, (32, 32))
         surface.blit(small_p2, (rx - 38, mid_y - 16))
-    surface.blit(p2_txt, (rx, mid_y - 20))
-    p2_score = font.render(f"Score: {game_state.player2.score}", True, COLOR_TEXT)
-    surface.blit(p2_score, (rx, mid_y + 2))
+    surface.blit(p2_name_surf, (rx, mid_y - 20))
+    surface.blit(p2_score_surf, (rx, mid_y + 2))
 
     # ── Centre: Turn / Round (clean text only) ──────────
     turn_str = f"Turn {game_state.turn_count}  ·  Round {game_state.round_count}"
@@ -95,6 +123,12 @@ def _draw_header(surface, game_state):
     cp_color = _CLR_P1 if cp.id == 1 else _CLR_P2
     cp_txt = font_sm.render(f"{cp.name}'s Turn", True, cp_color)
     surface.blit(cp_txt, cp_txt.get_rect(center=(cx, mid_y + 14)))
+
+    # Vertical separators
+    pygame.draw.line(surface, _CLR_PANEL_BORDER,
+                     (cx - 100, 10), (cx - 100, header_h - 10), 1)
+    pygame.draw.line(surface, _CLR_PANEL_BORDER,
+                     (cx + 100, 10), (cx + 100, header_h - 10), 1)
 
 
 # ── Main board drawing ──────────────────────────────────
@@ -159,8 +193,11 @@ def draw_board(surface, game_state, wall_mode=False, wall_highlights=None):
             surface.blit(hl, _cell_rect(wr, wc).topleft)
 
     # ── Draw players ────────────────────────────────────
-    _draw_player(surface, game_state.player1, COLOR_PLAYER1, "P1", "player1")
-    _draw_player(surface, game_state.player2, COLOR_PLAYER2, "P2", "player2")
+    cp = game_state.get_current_player()
+    _draw_player(surface, game_state.player1, COLOR_PLAYER1, "P1", "player1",
+                 is_active=(cp.id == 1))
+    _draw_player(surface, game_state.player2, COLOR_PLAYER2, "P2", "player2",
+                 is_active=(cp.id == 2))
 
     # ── Header ──────────────────────────────────────────
     _draw_header(surface, game_state)
@@ -168,12 +205,25 @@ def draw_board(surface, game_state, wall_mode=False, wall_highlights=None):
     # ── Bottom HUD ──────────────────────────────────────
     _draw_hud(surface, game_state, wall_mode)
 
-    # ── Side panel ──────────────────────────────────────
-    _draw_side_panel(surface, game_state)
+    # ── Board frame ───────────────────────────────────
+    frame = pygame.Rect(BOARD_OFFSET_X - 3, BOARD_OFFSET_Y - 3,
+                        BOARD_W + 6, BOARD_H + 6)
+    pygame.draw.rect(surface, _CLR_PANEL_BORDER, frame, 2, border_radius=2)
+
+    # ── Side panel ────────────────────────────────────
+    _draw_side_panel(surface, game_state, wall_mode)
 
 
-def _draw_player(surface, player, color, label, sprite_key):
+def _draw_player(surface, player, color, label, sprite_key, is_active=False):
     rect = _cell_rect(player.row, player.col)
+    # Active player glow ring
+    if is_active:
+        glow = pygame.Surface((CELL_SIZE + 8, CELL_SIZE + 8), pygame.SRCALPHA)
+        glow_clr = (*color[:3], 60)
+        pygame.draw.circle(glow, glow_clr,
+                           (CELL_SIZE // 2 + 4, CELL_SIZE // 2 + 4),
+                           CELL_SIZE // 2 + 2)
+        surface.blit(glow, (rect.x - 4, rect.y - 4))
     spr = assets.get(sprite_key)
     if spr:
         _blit_centered(surface, spr, rect)
@@ -183,6 +233,9 @@ def _draw_player(surface, player, color, label, sprite_key):
         pygame.draw.circle(surface, color, center, radius)
         pygame.draw.circle(surface, (255, 255, 255), center, radius, 2)
         _draw_cell_text(surface, label, rect, 14, (255, 255, 255))
+    # Active border
+    if is_active:
+        pygame.draw.rect(surface, _CLR_ACCENT, rect, 2, border_radius=3)
 
 
 def _draw_value_badge(surface, text, rect):
@@ -202,7 +255,8 @@ def _draw_value_badge(surface, text, rect):
 def _draw_hud(surface, game_state, wall_mode):
     """Bottom info panel with scores and game info."""
     font = pygame.font.SysFont("consolas", 13)
-    font_b = pygame.font.SysFont("consolas", 13, bold=True)
+    font_b = pygame.font.SysFont("consolas", 14, bold=True)
+    font_sm = pygame.font.SysFont("consolas", 11)
 
     # Panel background
     panel_y = BOARD_BOTTOM + 2
@@ -213,88 +267,265 @@ def _draw_hud(surface, game_state, wall_mode):
     px = BOARD_OFFSET_X
     py = panel_y + 6
 
-    # ── Score row ───────────────────────────────────────
-    _draw_score_row(surface, px, py, game_state.player1, "P1", _CLR_P1, font, font_b)
-    _draw_score_row(surface, px + 310, py, game_state.player2, "P2", _CLR_P2, font, font_b)
+    # ── Score bars ──────────────────────────────────────
+    total = game_state.player1.score + game_state.player2.score
+    bar_w = 280
+    bar_h = 14
 
-    # ── Info row ────────────────────────────────────────
-    y2 = py + 20
-    mode_label = "AI vs AI" if game_state.game_mode == "ai_vs_ai" else "AI vs Human"
-    diff_label = game_state.difficulty.capitalize()
-    info_txt = font.render(
-        f"Mode: {mode_label}   Difficulty: {diff_label}   "
-        f"Temp Walls: {len(game_state.temp_walls)}",
-        True, (150, 155, 170),
+    # P1 score bar
+    p1_spr = assets.get("player1")
+    sx = px
+    if p1_spr:
+        tiny = pygame.transform.smoothscale(p1_spr, (18, 18))
+        surface.blit(tiny, (sx, py))
+        sx += 22
+    p1_label = font_b.render(f"{game_state.player1.name}: {game_state.player1.score}",
+                             True, _CLR_P1)
+    surface.blit(p1_label, (sx, py))
+
+    # P2 score bar
+    p2_x = px + 340
+    p2_spr = assets.get("player2")
+    sx2 = p2_x
+    if p2_spr:
+        tiny2 = pygame.transform.smoothscale(p2_spr, (18, 18))
+        surface.blit(tiny2, (sx2, py))
+        sx2 += 22
+    p2_label = font_b.render(f"{game_state.player2.name}: {game_state.player2.score}",
+                             True, _CLR_P2)
+    surface.blit(p2_label, (sx2, py))
+
+    # Score comparison bar
+    bar_y = py + 22
+    bar_total_w = BOARD_W
+    pygame.draw.rect(surface, (40, 43, 55),
+                     pygame.Rect(px, bar_y, bar_total_w, bar_h), border_radius=4)
+    if total > 0:
+        p1_w = int(bar_total_w * game_state.player1.score / total)
+        if p1_w > 0:
+            pygame.draw.rect(surface, _CLR_P1,
+                             pygame.Rect(px, bar_y, p1_w, bar_h),
+                             border_radius=4)
+        p2_w = bar_total_w - p1_w
+        if p2_w > 0:
+            pygame.draw.rect(surface, _CLR_P2,
+                             pygame.Rect(px + p1_w, bar_y, p2_w, bar_h),
+                             border_radius=4)
+    else:
+        # No score yet — half/half placeholder
+        mid = bar_total_w // 2
+        pygame.draw.rect(surface, (55, 60, 75),
+                         pygame.Rect(px, bar_y, mid, bar_h), border_radius=4)
+
+    # ── Info row below bar ──────────────────────────────
+    y2 = bar_y + bar_h + 4
+    remaining = len(game_state.treasures)
+    info_txt = font_sm.render(
+        f"Treasures: {remaining}   |   Walls: {len(game_state.temp_walls)}   |   "
+        f"Round: {game_state.round_count}   |   Turn: {game_state.turn_count}",
+        True, (130, 135, 150),
     )
     surface.blit(info_txt, (px, y2))
 
     # ── Wall mode indicator ─────────────────────────────
     if wall_mode:
-        y3 = y2 + 18
-        wm_bg = pygame.Surface((340, 20), pygame.SRCALPHA)
+        wm_y = y2 + 16
+        wm_bg = pygame.Surface((340, 18), pygame.SRCALPHA)
         wm_bg.fill((255, 120, 50, 50))
-        surface.blit(wm_bg, (px - 4, y3 - 2))
-        wm_txt = font_b.render("⚠ WALL MODE — Click cell or ESC to cancel", True, COLOR_WALL_MODE)
-        surface.blit(wm_txt, (px, y3))
+        surface.blit(wm_bg, (px - 4, wm_y - 1))
+        wm_txt = font_b.render("WALL MODE — Click cell or press ESC", True, COLOR_WALL_MODE)
+        surface.blit(wm_txt, (px, wm_y))
 
 
-def _draw_score_row(surface, x, y, player, label, color, font, font_b):
-    """Draw a compact player score with collected count and treasure icons."""
-    txt = font_b.render(f"{label}: {player.score}", True, color)
-    surface.blit(txt, (x, y))
-    sx = x + txt.get_width() + 8
-    ct = font.render(f"({player.collected_count} collected)", True, (130, 135, 150))
-    surface.blit(ct, (sx, y + 1))
-    # Inline treasure icons
-    ix = sx + ct.get_width() + 6
-    for key in ("cash_value", "gold_value", "diamond_value"):
-        icon = assets.get(key)
-        if icon:
-            surface.blit(icon, (ix, y - 2))
-            ix += icon.get_width() + 4
-
-
-def _draw_side_panel(surface, game_state):
-    """Right-side panel showing temp wall info."""
-    side_x = BOARD_RIGHT + 10
-    side_w = WINDOW_WIDTH - side_x - 6
+def _draw_side_panel(surface, game_state, wall_mode=False):
+    """Right-side panel: scores, game info, controls, treasure legend, temp walls."""
+    side_x = BOARD_RIGHT + 14
+    side_w = WINDOW_WIDTH - BOARD_RIGHT - 22
     side_y = BOARD_OFFSET_Y
+    panel_h = BOARD_H + 8
 
     # Panel background
-    panel = pygame.Rect(side_x - 6, side_y - 2, side_w + 12, BOARD_H + 4)
-    pygame.draw.rect(surface, _CLR_PANEL, panel, border_radius=8)
-    pygame.draw.rect(surface, _CLR_PANEL_BORDER, panel, 1, border_radius=8)
+    panel_rect = pygame.Rect(BOARD_RIGHT + 5, side_y - 4,
+                             WINDOW_WIDTH - BOARD_RIGHT - 10, panel_h)
+    pygame.draw.rect(surface, _CLR_PANEL, panel_rect, border_radius=10)
+    pygame.draw.rect(surface, _CLR_PANEL_BORDER, panel_rect, 1, border_radius=10)
 
-    font_h = pygame.font.SysFont("consolas", 13, bold=True)
     font_s = pygame.font.SysFont("consolas", 11)
+    font_val = pygame.font.SysFont("consolas", 11, bold=True)
+    font_score = pygame.font.SysFont("consolas", 16, bold=True)
+    font_score_sm = pygame.font.SysFont("consolas", 11)
 
     ty = side_y + 8
 
-    # Life/round icon
-    lr = assets.get("life_round")
-    if lr:
-        surface.blit(lr, (side_x, ty))
-        ty += lr.get_height() + 6
+    # ── Section: Scores (prominent) ───────────────────────
+    ty = _draw_panel_section(surface, "SCORES", side_x, ty, side_w)
 
-    header = font_h.render("Temp Walls", True, _CLR_ACCENT)
-    surface.blit(header, (side_x, ty))
-    ty += 20
+    cp = game_state.get_current_player()
+    for player, clr, label in [
+        (game_state.player1, _CLR_P1, "P1"),
+        (game_state.player2, _CLR_P2, "P2"),
+    ]:
+        # Player icon
+        spr = assets.get("player1" if player.id == 1 else "player2")
+        ix = side_x
+        if spr:
+            small = pygame.transform.smoothscale(spr, (20, 20))
+            surface.blit(small, (ix, ty + 1))
+            ix += 24
 
-    pygame.draw.line(surface, _CLR_PANEL_BORDER,
-                     (side_x - 2, ty), (side_x + side_w, ty), 1)
-    ty += 6
+        # Name
+        nt = font_val.render(player.name, True, clr)
+        surface.blit(nt, (ix, ty + 3))
+
+        # Score value (right-aligned)
+        st = font_score.render(str(player.score), True, clr)
+        surface.blit(st, (side_x + side_w - st.get_width(), ty))
+
+        # Active turn indicator
+        if player.id == cp.id:
+            dot_x = side_x + side_w - st.get_width() - 10
+            pygame.draw.circle(surface, _CLR_ACCENT, (dot_x, ty + 10), 3)
+
+        ty += 22
+
+        # Collected count
+        ct = font_s.render(f"{player.collected_count} collected", True, (110, 115, 130))
+        surface.blit(ct, (ix, ty))
+        ty += 16
+
+    ty += 4
+
+    # ── Section: Game Info ────────────────────────────────
+    ty = _draw_panel_section(surface, "GAME INFO", side_x, ty, side_w)
+
+    mode_label = "AI vs Human" if game_state.game_mode == MODE_AI_VS_HUMAN else "AI vs AI"
+    diff_label = game_state.difficulty.capitalize()
+    info_pairs = [
+        ("Mode:", mode_label),
+        ("Difficulty:", diff_label),
+        ("Round:", str(game_state.round_count)),
+        ("Turn:", str(game_state.turn_count)),
+    ]
+    for lab, val in info_pairs:
+        lt = font_s.render(lab, True, (140, 145, 160))
+        surface.blit(lt, (side_x, ty))
+        vt = font_val.render(val, True, COLOR_TEXT)
+        surface.blit(vt, (side_x + 78, ty))
+        ty += 15
+    ty += 4
+
+    # ── Section: Controls (Human mode only) ───────────────
+    is_human = game_state.game_mode == MODE_AI_VS_HUMAN
+    if is_human:
+        ty = _draw_panel_section(surface, "CONTROLS", side_x, ty, side_w)
+
+        # Movement sub-section with button sprite
+        btn_mv = assets.get("btn_move")
+        if btn_mv:
+            scaled = pygame.transform.smoothscale(btn_mv, (68, 32))
+            surface.blit(scaled, (side_x, ty))
+            ty += 34
+        else:
+            mvh = font_val.render("Movement", True, (180, 185, 200))
+            surface.blit(mvh, (side_x, ty))
+            ty += 16
+
+        # WASD keys in diamond layout
+        kx = side_x
+        _draw_keycap(surface, "W", kx + 26, ty, 22, 18)
+        ty += 21
+        _draw_keycap(surface, "A", kx, ty, 22, 18)
+        _draw_keycap(surface, "S", kx + 26, ty, 22, 18)
+        _draw_keycap(surface, "D", kx + 52, ty, 22, 18)
+        desc = font_s.render("Move (Arrows too)", True, (150, 155, 170))
+        surface.blit(desc, (kx + 80, ty + 2))
+        ty += 24
+
+        # Wall placement sub-section with button sprite
+        btn_pw = assets.get("btn_place_wall")
+        if btn_pw:
+            scaled = pygame.transform.smoothscale(btn_pw, (80, 34))
+            surface.blit(scaled, (side_x, ty))
+            ty += 36
+        else:
+            pwh = font_val.render("Wall Placement", True, (180, 185, 200))
+            surface.blit(pwh, (side_x, ty))
+            ty += 16
+
+        # Quick wall keys in diamond layout
+        kx = side_x
+        _draw_keycap(surface, "T", kx + 26, ty, 22, 18)
+        ty += 21
+        _draw_keycap(surface, "L", kx, ty, 22, 18)
+        _draw_keycap(surface, "B", kx + 26, ty, 22, 18)
+        _draw_keycap(surface, "R", kx + 52, ty, 22, 18)
+        wd = font_s.render("Place Wall", True, (150, 155, 170))
+        surface.blit(wd, (kx + 80, ty + 2))
+        ty += 24
+
+        _draw_keycap(surface, "E", side_x, ty, 22, 18)
+        et = font_s.render("Wall Mode + Click", True, (150, 155, 170))
+        surface.blit(et, (side_x + 28, ty + 2))
+        ty += 22
+
+        _draw_keycap(surface, "ESC", side_x, ty, 34, 18)
+        esc_t = font_s.render("Cancel", True, (150, 155, 170))
+        surface.blit(esc_t, (side_x + 40, ty + 2))
+        ty += 24
+
+        # Wall mode active indicator
+        if wall_mode:
+            wm_surf = pygame.Surface((side_w + 4, 18), pygame.SRCALPHA)
+            wm_surf.fill((255, 120, 50, 45))
+            surface.blit(wm_surf, (side_x - 4, ty))
+            wm_border = pygame.Rect(side_x - 4, ty, side_w + 4, 18)
+            pygame.draw.rect(surface, (255, 140, 60), wm_border, 1, border_radius=3)
+            wm_font = pygame.font.SysFont("consolas", 10, bold=True)
+            wm_txt = wm_font.render("WALL MODE ACTIVE", True, (255, 160, 80))
+            surface.blit(wm_txt, (side_x, ty + 3))
+            ty += 22
+        ty += 2
+
+    # ── Section: Treasure Values ──────────────────────────
+    ty = _draw_panel_section(surface, "TREASURES", side_x, ty, side_w)
+
+    treasure_info = [
+        ("cash", "Cash", TREASURE_VALUES["cash"], COLOR_CASH),
+        ("gold", "Gold", TREASURE_VALUES["gold"], COLOR_GOLD),
+        ("diamond", "Diamond", TREASURE_VALUES["diamond"], COLOR_DIAMOND),
+    ]
+    for sprite_key, name, value, color in treasure_info:
+        spr = assets.get(sprite_key)
+        if spr:
+            small = pygame.transform.smoothscale(spr, (16, 16))
+            surface.blit(small, (side_x, ty + 1))
+        else:
+            pygame.draw.circle(surface, color, (side_x + 8, ty + 9), 6)
+        nt = font_s.render(name, True, (180, 185, 200))
+        surface.blit(nt, (side_x + 22, ty + 2))
+        vt = font_val.render(f"= {value} pts", True, color)
+        surface.blit(vt, (side_x + 90, ty + 2))
+        ty += 20
+
+    remaining = len(game_state.treasures)
+    rem_txt = font_s.render(f"Remaining: {remaining}", True, (140, 145, 160))
+    surface.blit(rem_txt, (side_x, ty + 1))
+    ty += 18
+
+    # ── Section: Temp Walls ───────────────────────────────
+    ty = _draw_panel_section(surface, "TEMP WALLS", side_x, ty, side_w)
 
     if not game_state.temp_walls:
-        none_txt = font_s.render("None active", True, (100, 105, 120))
-        surface.blit(none_txt, (side_x, ty))
+        none_t = font_s.render("None active", True, (100, 105, 120))
+        surface.blit(none_t, (side_x, ty))
     else:
-        for tw in game_state.temp_walls[:18]:
+        for tw in game_state.temp_walls[:6]:
             owner_clr = _CLR_P1 if tw.owner_id == 1 else _CLR_P2
-            info = f"({tw.row},{tw.col}) R{tw.remaining_rounds}"
+            info = f"({tw.row},{tw.col})  {tw.remaining_rounds} rnd"
             txt = font_s.render(info, True, owner_clr)
             surface.blit(txt, (side_x, ty))
             ty += 14
-            if ty > side_y + BOARD_H - 8:
+            if ty > side_y + panel_h - 16:
                 break
 
 
@@ -310,6 +541,12 @@ def draw_end_screen(surface, game_state):
     surface.fill(COLOR_BG)
     cx = WINDOW_WIDTH // 2
     cy = WINDOW_HEIGHT // 2
+
+    # Central panel background
+    panel_w, panel_h = 680, 600
+    panel = pygame.Rect(cx - panel_w // 2, 25, panel_w, panel_h)
+    pygame.draw.rect(surface, _CLR_PANEL, panel, border_radius=16)
+    pygame.draw.rect(surface, _CLR_PANEL_BORDER, panel, 2, border_radius=16)
 
     # Determine result
     if game_state.winner:
@@ -386,9 +623,16 @@ def draw_end_screen(surface, game_state):
                  f"Turns: {game_state.turn_count}  |  Rounds: {game_state.round_count}",
                  cx, y, (140, 145, 160))
 
-    # Action buttons
+    # Action hints with keycaps
     y += 40
-    _blit_center(surface, font_r, "[R] Replay    [M] Menu    [Q] Quit", cx, y, _CLR_ACCENT)
+    font_act = pygame.font.SysFont("consolas", 14)
+    actions = [("R", "Replay"), ("M", "Menu"), ("Q", "Quit")]
+    ax = cx - 140
+    for key, label in actions:
+        _draw_keycap(surface, key, ax, y - 10, 28, 22)
+        lt = font_act.render(label, True, (180, 185, 200))
+        surface.blit(lt, (ax + 34, y - 4))
+        ax += 100
 
 
 def draw_confirm_exit(surface):
@@ -407,7 +651,13 @@ def draw_confirm_exit(surface):
     font = pygame.font.SysFont("consolas", 24, bold=True)
     font_sm = pygame.font.SysFont("consolas", 16)
     _blit_center(surface, font, "Leave Game?", cx, cy - 25, COLOR_TEXT)
-    _blit_center(surface, font_sm, "[Y] Yes        [N] No", cx, cy + 25, _CLR_ACCENT)
+
+    _draw_keycap(surface, "Y", cx - 60, cy + 14, 28, 22)
+    yt = font_sm.render("Yes", True, _CLR_ACCENT)
+    surface.blit(yt, (cx - 28, cy + 18))
+    _draw_keycap(surface, "N", cx + 30, cy + 14, 28, 22)
+    nt = font_sm.render("No", True, _CLR_ACCENT)
+    surface.blit(nt, (cx + 62, cy + 18))
 
 
 def _blit_center(surface, font, text, cx, y, color):

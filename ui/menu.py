@@ -33,14 +33,21 @@ class Button:
 
     def draw(self, surface):
         # Shadow
-        shadow = self.rect.move(3, 3)
-        pygame.draw.rect(surface, (10, 10, 15), shadow, border_radius=10)
+        shadow = self.rect.move(3, 4)
+        pygame.draw.rect(surface, (8, 8, 12), shadow, border_radius=12)
         # Body
         clr = _CLR_BTN_HOVER if self.hovered else _CLR_BTN
-        pygame.draw.rect(surface, clr, self.rect, border_radius=10)
+        pygame.draw.rect(surface, clr, self.rect, border_radius=12)
+        # Subtle highlight on hover
+        if self.hovered:
+            hl = pygame.Rect(self.rect.x + 2, self.rect.y + 2,
+                             self.rect.width - 4, self.rect.height // 2)
+            hl_surf = pygame.Surface((hl.width, hl.height), pygame.SRCALPHA)
+            hl_surf.fill((255, 255, 255, 20))
+            surface.blit(hl_surf, hl.topleft)
         # Border
         border_clr = _CLR_ACCENT if self.hovered else _CLR_BTN_BORDER
-        pygame.draw.rect(surface, border_clr, self.rect, 2, border_radius=10)
+        pygame.draw.rect(surface, border_clr, self.rect, 2, border_radius=12)
         # Text
         font = pygame.font.SysFont("consolas", 20, bold=True)
         txt = font.render(self.text, True, COLOR_BUTTON_TEXT)
@@ -106,6 +113,15 @@ def run_main_menu(screen, clock) -> dict | None:
 def _draw_main(screen, mouse_pos):
     cx = WINDOW_WIDTH // 2
 
+    # Central panel backdrop
+    panel_w, panel_h = 520, 620
+    panel = pygame.Rect(cx - panel_w // 2, 30, panel_w, panel_h)
+    panel_surf = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+    panel_surf.fill((*_CLR_PANEL, 160))
+    pygame.draw.rect(panel_surf, (*_CLR_BORDER, 200),
+                     panel_surf.get_rect(), 1, border_radius=16)
+    screen.blit(panel_surf, panel.topleft)
+
     # Logo sprite
     logo = assets.get("logo")
     if logo:
@@ -122,6 +138,11 @@ def _draw_main(screen, mouse_pos):
     font_sub = pygame.font.SysFont("consolas", 16)
     txt2 = font_sub.render("A 2D Turn-Based Maze Strategy Game", True, _CLR_SUBTITLE)
     screen.blit(txt2, txt2.get_rect(center=(cx, sub_y)))
+
+    # Decorative accent line
+    line_surf = pygame.Surface((200, 2), pygame.SRCALPHA)
+    line_surf.fill((*_CLR_ACCENT, 120))
+    screen.blit(line_surf, (cx - 100, sub_y + 16))
 
     # Player character previews
     p1_spr = assets.get("player1_big")
@@ -156,7 +177,7 @@ def _draw_main(screen, mouse_pos):
 
     # Footer
     font_foot = pygame.font.SysFont("consolas", 11)
-    foot = font_foot.render("KUET · AI Lab · 3-2", True, (80, 85, 100))
+    foot = font_foot.render("KUET  \u00b7  AI Lab  \u00b7  3-2", True, (80, 85, 100))
     screen.blit(foot, foot.get_rect(center=(cx, WINDOW_HEIGHT - 20)))
 
     return buttons
@@ -170,9 +191,10 @@ def _draw_mode_select(screen, mouse_pos):
 
     bw, bh = 300, 54
     y = 230
+    gap = 82
     b1 = Button(cx - bw // 2, y, bw, bh, "AI  vs  AI", MODE_AI_VS_AI)
-    b2 = Button(cx - bw // 2, y + 75, bw, bh, "AI  vs  Human", MODE_AI_VS_HUMAN)
-    b_back = Button(cx - bw // 2, y + 195, bw, bh, "← Back", "back")
+    b2 = Button(cx - bw // 2, y + gap, bw, bh, "AI  vs  Human", MODE_AI_VS_HUMAN)
+    b_back = Button(cx - bw // 2, y + gap * 2 + 30, bw, bh, "← Back", "back")
     buttons = [b1, b2, b_back]
 
     # Player sprites next to buttons
@@ -186,6 +208,17 @@ def _draw_mode_select(screen, mouse_pos):
     for b in buttons:
         b.update(mouse_pos)
         b.draw(screen)
+
+    # Mode descriptions
+    font_desc = pygame.font.SysFont("consolas", 12)
+    descs = [
+        ("Watch two AI agents compete", (150, 155, 170)),
+        ("Play against the Minimax AI", (150, 155, 170)),
+    ]
+    for i, (desc, clr) in enumerate(descs):
+        dt = font_desc.render(desc, True, clr)
+        screen.blit(dt, dt.get_rect(center=(cx, y + i * gap + bh + 8)))
+
     return buttons
 
 
@@ -196,23 +229,31 @@ def _draw_difficulty_select(screen, mouse_pos):
 
     bw, bh = 260, 54
     y = 220
+    gap = 78
 
-    diff_labels = [
-        ("Easy", "easy", (100, 200, 100)),
-        ("Medium", "medium", (255, 200, 50)),
-        ("Hard", "hard", (255, 80, 80)),
+    diff_info = [
+        ("Easy", "easy", (100, 200, 100), "Slower AI, fewer walls"),
+        ("Medium", "medium", (255, 200, 50), "Balanced challenge"),
+        ("Hard", "hard", (255, 80, 80), "Fast AI, dense maze"),
     ]
     buttons = []
-    for i, (label, val, _clr) in enumerate(diff_labels):
-        b = Button(cx - bw // 2, y + i * 72, bw, bh, label, val)
+    for i, (label, val, _clr, desc) in enumerate(diff_info):
+        b = Button(cx - bw // 2, y + i * gap, bw, bh, label, val)
         buttons.append(b)
 
-    b_back = Button(cx - bw // 2, y + 3 * 72 + 20, bw, bh, "← Back", "back")
+    b_back = Button(cx - bw // 2, y + 3 * gap + 20, bw, bh, "← Back", "back")
     buttons.append(b_back)
 
     for b in buttons:
         b.update(mouse_pos)
         b.draw(screen)
+
+    # Difficulty descriptions
+    font_desc = pygame.font.SysFont("consolas", 12)
+    for i, (_, _, clr, desc) in enumerate(diff_info):
+        dt = font_desc.render(desc, True, clr)
+        screen.blit(dt, dt.get_rect(center=(cx, y + i * gap + bh + 8)))
+
     return buttons
 
 
