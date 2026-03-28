@@ -1,11 +1,13 @@
 """
-heuristics.py — Aggressive board evaluation for Minimax.
+heuristics.py — Hyper-aggressive board evaluation for Minimax.
 
 Key design:
-- Heavy score_diff weight so Minimax always prioritizes point collection
-- Strong race_score with wall-aware BFS to justify blocking walls
-- Boosted blocking bonuses to reward trapping the opponent
-- Endgame urgency: when few treasures remain, aggression increases
+- Very heavy score_diff so Minimax grabs every point possible
+- Dominant race_score: being closer to treasures is hugely valuable
+- Massive blocking bonuses: trapping opponent is nearly as good as scoring
+- Denial scoring: cutting opponent off from treasures is rewarded heavily
+- Proximity aggression: moving toward opponent to restrict them
+- Endgame escalation: when few treasures remain, go all-in
 """
 
 from collections import deque
@@ -53,14 +55,14 @@ def evaluate(game_state, maximizing_player_id):
     score_diff = me.score - opp.score
     collection_diff = getattr(me, "collected_count", 0) - getattr(opp, "collected_count", 0)
 
-    # ── Treasure race analysis ──────────────────────────
-    # Continuous lead formula: walls that increase d_opp directly boost
-    # race_score, proportional to treasure value and proximity.
+    # ── Treasure race analysis (aggressive) ─────────────
     race_score = 0.0
     my_reachable = 0
     opp_reachable = 0
     total_my_dist = 0
     total_opp_dist = 0
+    denial_bonus = 0.0          # reward for cutting opponent off treasures
+    imminent_capture = 0.0      # I can capture next turn
 
     for t in game_state.treasures:
         tp = (t.row, t.col)
@@ -80,68 +82,128 @@ def evaluate(game_state, maximizing_player_id):
         if me_can and opp_can:
             lead = d_opp - d_me  # positive = I'm closer
             weight = t.value / (min(d_me, d_opp) + 1)
-            race_score += lead * weight * 1.3
-            # Extra tempo bonus: if I'm strictly closer, I capture first
+            race_score += lead * weight * 1.8
+            # Tempo bonus: if I'm strictly closer, I capture first
             if d_me < d_opp:
-                race_score += t.value * 0.5
+                race_score += t.value * 0.7
+                # Imminent capture bonus: I get it next turn
+                if d_me == 1:
+                    imminent_capture += t.value * 2.5
+                elif d_me == 2:
+                    imminent_capture += t.value * 0.8
+            elif d_opp < d_me:
+                # Opponent is closer — penalize but also incentivize blocking
+                race_score -= t.value * 0.3
+                # Blocking incentive: if opponent is 1-2 away, walls are critical
+                if d_opp <= 2:
+                    race_score -= t.value * 0.5  # extra urgency
         elif me_can:
-            # Opponent cut off from this treasure — big advantage
-            race_score += t.value * 4.0
+            # Opponent completely cut off — massive advantage
+            denial_bonus += t.value * 5.0
+            if d_me <= 2:
+                denial_bonus += t.value * 2.0  # easy pickup too
         elif opp_can:
-            # I'm cut off — big disadvantage
-            race_score -= t.value * 4.0
+            # I'm cut off — significant disadvantage
+            race_score -= t.value * 5.0
 
-    # Average distance comparison: walls increase opponent's avg distance
+    # ── Opponent imminent threat penalty ────────────────
+    # Explicit penalty whenever A* is about to collect a high-value treasure.
+    # This creates a strong blocking signal regardless of where Minimax is,
+    # making walls near those treasures look very valuable in the search tree.
+    opp_imminent_threat = 0.0
+    for t in game_state.treasures:
+        tp = (t.row, t.col)
+        d_opp = opp_dists.get(tp, _INF)
+        if d_opp == 1:
+            opp_imminent_threat += t.value * 5.0   # opponent captures next turn
+        elif d_opp == 2:
+            opp_imminent_threat += t.value * 2.5
+        elif d_opp == 3:
+            opp_imminent_threat += t.value * 1.0
+
+    # Average distance comparison
     avg_my = total_my_dist / max(my_reachable, 1)
     avg_opp = total_opp_dist / max(opp_reachable, 1)
     dist_advantage = avg_opp - avg_my
 
-    # ── Mobility analysis ───────────────────────────────
+    # ── Difficulty-scaled blocking aggression ───────────
+    # Easy: Minimax blocks when clearly beneficial to deny A*
+    # Hard: very aggressive blocker
+    _diff = getattr(game_state, 'difficulty', 'medium')
+    _block_scale = {'easy': 0.70, 'medium': 0.95, 'hard': 1.40}.get(_diff, 0.95)
+
+    # ── Mobility analysis ────────────────────────────────
     my_moves = _count_open_neighbors(grid, rows, cols, me.row, me.col, opp.row, opp.col)
     opp_moves = _count_open_neighbors(grid, rows, cols, opp.row, opp.col, me.row, me.col)
 
-    # Trap avoidance
+    # Trap avoidance — always penalized regardless of difficulty
     if my_moves == 0:
-        trap_penalty = 35.0
+        trap_penalty = 50.0
     elif my_moves == 1:
-        trap_penalty = 14.0
+        trap_penalty = 18.0
     elif my_moves == 2:
-        trap_penalty = 3.5
+        trap_penalty = 4.0
     else:
         trap_penalty = 0.0
 
-    # Blocking reward — walls directly reduce opponent mobility
+    # Blocking reward — scaled by difficulty
     if opp_moves == 0:
-        blocking_bonus = 18.0
+        blocking_bonus = 40.0   # opponent is completely trapped
     elif opp_moves == 1:
-        blocking_bonus = 9.0
+        blocking_bonus = 20.0   # opponent nearly trapped
     elif opp_moves == 2:
-        blocking_bonus = 3.5
+        blocking_bonus = 7.0    # opponent restricted
     else:
         blocking_bonus = 0.0
 
+    # ── Corridor trapping detection (difficulty-scaled) ──
+    opp_freedom = len(opp_dists)
+    my_freedom = len(my_dists)
+    corridor_bonus = 0.0
+    if opp_freedom <= 6:
+        corridor_bonus = 22.0
+    elif opp_freedom <= 12:
+        corridor_bonus = 9.0
+    elif opp_freedom <= 20:
+        corridor_bonus = 2.5
+
+    # ── Proximity aggression (difficulty-scaled) ─────────
+    opp_dist_from_me = abs(me.row - opp.row) + abs(me.col - opp.col)
+    proximity_bonus = 0.0
+    if opp_dist_from_me <= 3 and opp_moves <= 2:
+        proximity_bonus = 5.0
+    elif opp_dist_from_me <= 2:
+        proximity_bonus = 1.5
+
     # ── Map control ─────────────────────────────────────
     reachable_diff = my_reachable - opp_reachable
-    control = len(my_dists) - len(opp_dists)
+    control = my_freedom - opp_freedom
 
-    # ── Endgame urgency ─────────────────────────────
+    # ── Endgame urgency ──────────────────────────────────
     n_treasures = len(game_state.treasures)
     urgency = 1.0
-    if n_treasures <= 3:
+    if n_treasures <= 2:
+        urgency = 2.0
+    elif n_treasures <= 4:
         urgency = 1.6
-    elif n_treasures <= 6:
-        urgency = 1.25
+    elif n_treasures <= 7:
+        urgency = 1.3
 
     return (
-        10.0 * score_diff
-        + 2.8 * race_score * urgency
-        + 0.8 * dist_advantage
-        + 3.5 * reachable_diff
-        + 0.10 * control
-        + blocking_bonus * 1.2
-        + 1.4 * (my_moves - opp_moves)
+        12.0 * score_diff
+        + 5.0 * race_score * urgency
+        + imminent_capture * urgency
+        + 2.0 * dist_advantage
+        + 5.5 * reachable_diff
+        + 0.15 * control
+        + blocking_bonus * 1.5 * _block_scale
+        + corridor_bonus * _block_scale
+        + proximity_bonus * _block_scale
+        + 1.8 * (my_moves - opp_moves)
         - trap_penalty
-        + 2.5 * collection_diff
+        + denial_bonus * urgency * _block_scale
+        + 3.0 * collection_diff
+        - opp_imminent_threat * urgency * _block_scale
     )
 
 

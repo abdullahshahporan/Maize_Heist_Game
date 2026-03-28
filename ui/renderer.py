@@ -1,6 +1,7 @@
 """
 renderer.py — Pygame drawing routines for board, players, treasures, HUD.
 Uses sprite assets when available, falls back to primitives.
+Enhanced with last-move indicators, speed display, and polished visuals.
 """
 
 import pygame
@@ -15,6 +16,7 @@ from config import (
     TREASURE_VALUES, MODE_AI_VS_HUMAN,
 )
 from game.board import CELL_PERM_WALL, CELL_TEMP_WALL
+from game.actions import ACTION_MOVE, ACTION_PLACE_WALL
 from ui.asset_manager import assets
 
 # ── Constants ───────────────────────────────────────────
@@ -139,7 +141,9 @@ def draw_board(surface, game_state, wall_mode=False, wall_highlights=None):
     pw_spr = assets.get("perm_wall")
     tw_spr = assets.get("temp_wall")
     bw_spr = assets.get("boundary_wall")
-
+    # Build a lookup: (row, col) -> owner_id for temp walls so we can label them
+    _tw_owners = {(w.row, w.col): w.owner_id
+                  for w in getattr(game_state, 'temp_walls', [])}
     # ── Draw grid cells ─────────────────────────────────
     for r in range(board.rows):
         for c in range(board.cols):
@@ -155,11 +159,21 @@ def draw_board(surface, game_state, wall_mode=False, wall_highlights=None):
                 else:
                     pygame.draw.rect(surface, COLOR_PERM_WALL, rect)
             elif cell == CELL_TEMP_WALL:
+                _tw_owner = _tw_owners.get((r, c), 0)
+                _tw_label = "M" if _tw_owner == 1 else "A"
+                # Owner tint: blue for Minimax (P1), red for A* (P2)
+                _tw_tint = (80, 130, 220) if _tw_owner == 1 else (220, 80, 80)
                 if tw_spr:
                     surface.blit(tw_spr, rect.topleft)
                 else:
                     pygame.draw.rect(surface, COLOR_TEMP_WALL, rect)
-                    _draw_cell_text(surface, "W", rect, 14, (255, 255, 255))
+                # Draw a small coloured badge in the top-left corner
+                badge = pygame.Rect(rect.x + 2, rect.y + 2, 16, 16)
+                pygame.draw.rect(surface, _tw_tint, badge, border_radius=3)
+                pygame.draw.rect(surface, (255, 255, 255), badge, 1, border_radius=3)
+                _lbl_font = pygame.font.SysFont("consolas", 11, bold=True)
+                _lbl_surf = _lbl_font.render(_tw_label, True, (255, 255, 255))
+                surface.blit(_lbl_surf, _lbl_surf.get_rect(center=badge.center))
             else:
                 # Checkerboard floor
                 floor_clr = _CLR_FLOOR if (r + c) % 2 == 0 else _CLR_FLOOR_ALT
@@ -191,6 +205,24 @@ def draw_board(surface, game_state, wall_mode=False, wall_highlights=None):
         pygame.draw.rect(hl, (255, 200, 50, 160), hl.get_rect(), 2)
         for (wr, wc) in wall_highlights:
             surface.blit(hl, _cell_rect(wr, wc).topleft)
+
+    # ── Last move indicator ─────────────────────────────
+    last_action = getattr(game_state, 'last_action', None)
+    last_pid = getattr(game_state, 'last_action_player_id', None)
+    if last_action and last_pid:
+        lr, lc = last_action.target
+        last_rect = _cell_rect(lr, lc)
+        if last_action.action_type == ACTION_MOVE:
+            # Pulsing green border for move
+            clr = (100, 255, 100, 140) if last_pid == 1 else (255, 120, 120, 140)
+            indicator = pygame.Surface((CELL_SIZE, CELL_SIZE), pygame.SRCALPHA)
+            pygame.draw.rect(indicator, clr, indicator.get_rect(), 3, border_radius=4)
+            surface.blit(indicator, last_rect.topleft)
+        elif last_action.action_type == ACTION_PLACE_WALL:
+            # Orange border for wall placement
+            indicator = pygame.Surface((CELL_SIZE, CELL_SIZE), pygame.SRCALPHA)
+            pygame.draw.rect(indicator, (255, 160, 50, 180), indicator.get_rect(), 3, border_radius=4)
+            surface.blit(indicator, last_rect.topleft)
 
     # ── Draw players ────────────────────────────────────
     cp = game_state.get_current_player()
@@ -528,6 +560,28 @@ def _draw_side_panel(surface, game_state, wall_mode=False):
             if ty > side_y + panel_h - 16:
                 break
 
+    # ── Section: Last Action ──────────────────────────────
+    ty += 4
+    if ty < side_y + panel_h - 60:
+        ty = _draw_panel_section(surface, "LAST ACTION", side_x, ty, side_w)
+        last_action = getattr(game_state, 'last_action', None)
+        last_pid = getattr(game_state, 'last_action_player_id', None)
+        if last_action and last_pid:
+            pname = game_state.player1.name if last_pid == 1 else game_state.player2.name
+            pclr = _CLR_P1 if last_pid == 1 else _CLR_P2
+            act_type = "Move" if last_action.action_type == ACTION_MOVE else "Wall"
+            r, c = last_action.target
+            at = font_val.render(f"{pname}", True, pclr)
+            surface.blit(at, (side_x, ty))
+            ty += 14
+            dt = font_s.render(f"{act_type} → ({r},{c})", True, (170, 175, 190))
+            surface.blit(dt, (side_x, ty))
+            ty += 14
+        else:
+            nt = font_s.render("None yet", True, (100, 105, 120))
+            surface.blit(nt, (side_x, ty))
+            ty += 14
+
 
 def _draw_cell_text(surface, text, rect, size=16, color=(0, 0, 0)):
     font = pygame.font.SysFont("consolas", size)
@@ -622,6 +676,17 @@ def draw_end_screen(surface, game_state):
     _blit_center(surface, font_s,
                  f"Turns: {game_state.turn_count}  |  Rounds: {game_state.round_count}",
                  cx, y, (140, 145, 160))
+
+    # Detailed stats
+    y += 24
+    p1_col = game_state.player1.collected_count
+    p2_col = game_state.player2.collected_count
+    p1_walls = game_state.wall_placements.get(1, 0)
+    p2_walls = game_state.wall_placements.get(2, 0)
+    stats_font = pygame.font.SysFont("consolas", 13)
+    _blit_center(surface, stats_font,
+                 f"Collected: {p1_col} vs {p2_col}  |  Walls placed: {p1_walls} vs {p2_walls}",
+                 cx, y, (120, 125, 140))
 
     # Action hints with keycaps
     y += 40

@@ -5,6 +5,7 @@ Run this file to start the game:  python main.py
 
 import sys
 import os
+import traceback
 
 # Ensure project root is on the path so imports work from any CWD
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -28,6 +29,8 @@ from ui.input_handler import HumanInputHandler
 from ui.asset_manager import assets
 from utils.logger import save_match_log
 from utils.helpers import Timer
+
+_DEFAULT_AI_VISUAL_DELAY = 300  # ms between AI moves for readability
 
 
 def build_game_state(mode: str, difficulty: str) -> GameState:
@@ -58,9 +61,8 @@ def run_game(screen, clock, game_state: GameState):
     """
     human_input = HumanInputHandler()
     ai_times = {1: [], 2: []}
-    ai_delay_timer = 0              # small visual delay for AI moves
-    AI_VISUAL_DELAY = 300           # ms between AI moves for readability
-    pending_action = None
+    ai_delay_timer = 0
+    AI_VISUAL_DELAY = _DEFAULT_AI_VISUAL_DELAY
     confirming_exit = False
 
     while True:
@@ -111,16 +113,29 @@ def run_game(screen, clock, game_state: GameState):
             ai_delay_timer += dt
             if ai_delay_timer >= AI_VISUAL_DELAY:
                 ai_delay_timer = 0
-                with Timer() as t:
-                    if current_player.type == PLAYER_TYPE_MINIMAX:
-                        action = choose_action_minimax(game_state,
-                                                       game_state.difficulty)
-                    else:
-                        action = choose_action_astar(game_state)
-                ai_times[current_player.id].append(t.elapsed)
+                action = None
+                try:
+                    with Timer() as t:
+                        if current_player.type == PLAYER_TYPE_MINIMAX:
+                            action = choose_action_minimax(game_state,
+                                                           game_state.difficulty)
+                        else:
+                            action = choose_action_astar(game_state)
+                    ai_times[current_player.id].append(t.elapsed)
+                except Exception:
+                    traceback.print_exc()
+                    action = None
 
                 if action:
-                    game_state.apply_action(action)
+                    try:
+                        game_state.apply_action(action)
+                    except Exception:
+                        traceback.print_exc()
+                        game_state.game_over = True
+                        game_state.winner = game_state.get_opponent()
+                        game_state.end_reason = (
+                            f"{current_player.name} caused an error"
+                        )
                 else:
                     # No action → lose
                     game_state.game_over = True
@@ -130,20 +145,23 @@ def run_game(screen, clock, game_state: GameState):
                     )
 
         # ── Drawing ─────────────────────────────────────
-        if game_state.game_over:
-            game_state.determine_winner()
-            draw_end_screen(screen, game_state)
-            # Save log once
-            if not game_state._logged:
-                save_match_log(game_state, ai_times)
-                game_state._logged = True
-        else:
-            draw_board(screen, game_state,
-                       wall_mode=human_input.wall_mode,
-                       wall_highlights=human_input.wall_highlights)
+        try:
+            if game_state.game_over:
+                game_state.determine_winner()
+                draw_end_screen(screen, game_state)
+                # Save log once
+                if not game_state._logged:
+                    save_match_log(game_state, ai_times)
+                    game_state._logged = True
+            else:
+                draw_board(screen, game_state,
+                           wall_mode=human_input.wall_mode,
+                           wall_highlights=human_input.wall_highlights)
 
-        if confirming_exit:
-            draw_confirm_exit(screen)
+            if confirming_exit:
+                draw_confirm_exit(screen)
+        except Exception:
+            traceback.print_exc()
 
         pygame.display.flip()
 

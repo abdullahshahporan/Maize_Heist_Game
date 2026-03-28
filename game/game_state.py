@@ -25,7 +25,8 @@ class GameState:
                  'game_mode', 'difficulty', 'game_over', 'winner',
                  'end_reason', 'wall_placements', '_is_simulation',
                  '_logged', '_ab_tt_key', '_cached_actions',
-                 '_distance_cache', '_treasure_value_map')
+                 '_distance_cache', '_treasure_value_map',
+                 'last_action', 'last_action_player_id')
 
     def __init__(self, board: Board, player1: Player, player2: Player,
                  treasures: list, game_mode: str, difficulty: str):
@@ -52,6 +53,8 @@ class GameState:
         self._cached_actions = None
         self._distance_cache = {}
         self._treasure_value_map = None
+        self.last_action = None
+        self.last_action_player_id = None
 
     # ── Player accessors ────────────────────────────────
     def get_current_player(self) -> Player:
@@ -100,6 +103,11 @@ class GameState:
     def apply_action(self, action: Action):
         """Apply action for current player, advance turn, handle round end."""
         player = self.get_current_player()
+
+        # Track last action for UI highlighting
+        if not self._is_simulation:
+            self.last_action = action
+            self.last_action_player_id = player.id
 
         if action.action_type == ACTION_MOVE:
             player.row, player.col = action.target
@@ -268,4 +276,6 @@ class GameState:
         gs._cached_actions = None
         gs._distance_cache = {}
         gs._treasure_value_map = None
+        gs.last_action = None
+        gs.last_action_player_id = None
         return gs

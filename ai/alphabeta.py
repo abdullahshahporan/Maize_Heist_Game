@@ -3,13 +3,13 @@ alphabeta.py — Optimized Alpha-Beta search for Maze Heist.
 
 Goals of this version:
 - safer transposition-table key (includes treasure positions and temp-wall timers)
-- faster root/deep move ordering
-- beam-style wall pruning at deeper nodes to keep branching under control
-- slightly treasure-biased ordering so Minimax explores the whole maze
-  instead of over-prioritising blocking in every position
+- aggressive move ordering favoring captures, blocking walls, then mobility
+- wider wall beam at deeper nodes to allow more blocking options
+- late-move reduction for deeper/wider search
+- treasure-biased ordering with opponent path awareness
 """
 
-from game.actions import ACTION_MOVE
+from game.actions import ACTION_MOVE, ACTION_PLACE_WALL
 from game.board import CELL_EMPTY
 from ai.heuristics import evaluate
 
@@ -20,7 +20,7 @@ _history = {}
 _TT_EXACT = 0
 _TT_LOWER = 1
 _TT_UPPER = 2
-_TT_MAX_SIZE = 200000
+_TT_MAX_SIZE = 300000
 
 
 def clear_transposition_table():
@@ -84,7 +84,7 @@ def _tt_key(game_state):
 
 
 def _order_actions(actions, game_state):
-    """Strategic ordering: captures → quiet moves → walls by quality."""
+    """Strategic ordering: captures → blocking walls → quiet moves → other walls."""
     treasure_values = game_state.get_treasure_value_map()
     player = game_state.get_current_player()
     opp = game_state.get_opponent()
@@ -110,7 +110,7 @@ def _order_actions(actions, game_state):
             treasure_pull = 0.0
             for (tr, tc), tv in treasure_values.items():
                 dist = abs(mr - tr) + abs(mc - tc)
-                if dist <= 5:
+                if dist <= 6:
                     treasure_pull += tv / (dist + 1)
 
             mobility = 0
@@ -124,13 +124,19 @@ def _order_actions(actions, game_state):
                 ):
                     mobility += 1
 
+            # Bonus for moving toward opponent (enables future blocking)
+            opp_dist_before = abs(pr - opr) + abs(pc - opc)
+            opp_dist_after = abs(mr - opr) + abs(mc - opc)
+            approach_bonus = max(0, opp_dist_before - opp_dist_after) * 3.0
+
             center_bias = abs(mr - rows // 2) + abs(mc - cols // 2)
             step_gain = abs(pr - mr) + abs(pc - mc)
-            score = treasure_pull * 10.0 + mobility * 4.0 + step_gain - center_bias
+            score = treasure_pull * 12.0 + mobility * 4.0 + step_gain + approach_bonus - center_bias
             quiet_moves.append((-(score + history * 0.02), action.target, action))
             continue
 
         wr, wc = action.target
+        # Wall scoring: prioritize walls that block opponent
         adj_walls = 0
         for dr, dc in _DIRS_AB:
             nr, nc = wr + dr, wc + dc
@@ -138,31 +144,56 @@ def _order_actions(actions, game_state):
                 adj_walls += 1
 
         dist_to_opp = abs(wr - opr) + abs(wc - opc)
-        treasure_nearby = 0
-        for (tr, tc), tv in treasure_values.items():
-            if abs(wr - tr) + abs(wc - tc) <= 2:
-                treasure_nearby += tv
 
-        quality = adj_walls * 5 + treasure_nearby - dist_to_opp + history * 0.03
+        # Strong bonus for walls adjacent to opponent
+        opp_adjacent = (dist_to_opp == 1)
+        opp_near_bonus = 15.0 if opp_adjacent else (5.0 if dist_to_opp <= 2 else 0.0)
+
+        # Bonus for walls near treasures opponent is close to
+        treasure_block = 0
+        for (tr, tc), tv in treasure_values.items():
+            wall_to_t = abs(wr - tr) + abs(wc - tc)
+            opp_to_t = abs(opr - tr) + abs(opc - tc)
+            if wall_to_t <= 2 and opp_to_t <= 4:
+                treasure_block += tv * 1.5
+
+        # Check if wall reduces opponent mobility
+        opp_mobility_impact = 0
+        for dr, dc in _DIRS_AB:
+            nr, nc = opr + dr, opc + dc
+            if (nr, nc) == (wr, wc):
+                opp_mobility_impact += 8  # blocks one of opponent's moves
+
+        quality = (adj_walls * 3 + treasure_block + opp_near_bonus
+                   + opp_mobility_impact - dist_to_opp * 0.3 + history * 0.03)
         walls.append((-quality, action.target, action))
 
     capture_moves.sort()
     quiet_moves.sort()
     walls.sort()
 
+    # Walls that actively block the opponent (quality ≥ 18, e.g. adjacent to
+    # opponent or sitting on their treasure path) are placed BEFORE quiet moves
+    # so alpha-beta cannot prune them before they are explored.  Weak walls
+    # stay at the end so they do not waste search budget.
+    _HIGH_WALL_Q = 18.0
+    high_walls = [(s, t, a) for s, t, a in walls if -s >= _HIGH_WALL_Q]
+    low_walls  = [(s, t, a) for s, t, a in walls if -s <  _HIGH_WALL_Q]
+
     result = [action for _, __, action in capture_moves]
+    result.extend(action for _, __, action in high_walls)
     result.extend(action for _, __, action in quiet_moves)
-    result.extend(action for _, __, action in walls)
+    result.extend(action for _, __, action in low_walls)
     return result
 
 
-def _beam_actions(actions, game_state, max_walls=3):
+def _beam_actions(actions, game_state, max_walls=5):
     """Keep all move actions and top-K walls, preserving strategic ordering."""
     ordered = _order_actions(actions, game_state)
     result = []
     wall_count = 0
     for action in ordered:
-        if action.action_type == ACTION_MOVE:
+        if action.action_type != ACTION_PLACE_WALL:
             result.append(action)
         elif wall_count < max_walls:
             result.append(action)
@@ -202,10 +233,17 @@ def alphabeta(game_state, depth, alpha, beta, maximizing, maximizing_player_id):
 
     if maximizing:
         value = float("-inf")
-        for action in actions:
+        for i, action in enumerate(actions):
             child = game_state.clone()
             child.apply_action(action)
-            score = alphabeta(child, depth - 1, alpha, beta, False, maximizing_player_id)
+            # Late-move reduction: search later moves at reduced depth
+            if i >= 4 and depth >= 3 and action.action_type != ACTION_MOVE:
+                score = alphabeta(child, depth - 2, alpha, beta, False, maximizing_player_id)
+                if score > alpha:
+                    # Re-search at full depth if it looks promising
+                    score = alphabeta(child, depth - 1, alpha, beta, False, maximizing_player_id)
+            else:
+                score = alphabeta(child, depth - 1, alpha, beta, False, maximizing_player_id)
             if score > value:
                 value = score
             if value > alpha:
@@ -215,10 +253,16 @@ def alphabeta(game_state, depth, alpha, beta, maximizing, maximizing_player_id):
                 break
     else:
         value = float("inf")
-        for action in actions:
+        for i, action in enumerate(actions):
             child = game_state.clone()
             child.apply_action(action)
-            score = alphabeta(child, depth - 1, alpha, beta, True, maximizing_player_id)
+            # Late-move reduction for minimizing player too
+            if i >= 4 and depth >= 3 and action.action_type != ACTION_MOVE:
+                score = alphabeta(child, depth - 2, alpha, beta, True, maximizing_player_id)
+                if score < beta:
+                    score = alphabeta(child, depth - 1, alpha, beta, True, maximizing_player_id)
+            else:
+                score = alphabeta(child, depth - 1, alpha, beta, True, maximizing_player_id)
             if score < value:
                 value = score
             if value < beta:
