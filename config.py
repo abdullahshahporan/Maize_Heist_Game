@@ -71,7 +71,7 @@ MAX_TURNS = 200
 # ── Difficulty Settings ────────────────────────────────
 DIFFICULTY_SETTINGS = {
     "easy": {
-        "minimax_depth": 4,
+        "minimax_depth": 5,
         "wall_density": 0.10,
         "label": "Easy",
     },

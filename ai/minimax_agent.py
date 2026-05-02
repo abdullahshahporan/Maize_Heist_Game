@@ -11,16 +11,21 @@ Design:
 """
 
 from config import DIFFICULTY_SETTINGS
-from game.actions import ACTION_MOVE, ACTION_PLACE_WALL
-from ai.alphabeta import alphabeta, clear_transposition_table, _order_actions
+from game.actions import Action, ACTION_MOVE, ACTION_PLACE_WALL
+from ai.alphabeta import alphabeta, clear_transposition_table, decay_history, reset_for_new_game, _order_actions
 from ai.wall_logic import evaluate_wall_placements
-from utils.pathfinding import bfs_all_distances
+from utils.pathfinding import bfs_all_distances, astar
 
 ASPIRATION_BASE = 15.0
 
 # Minimum wall utility required before Minimax considers placing a wall.
-# Easy: any wall that meaningfully delays opponent; Hard: almost any block.
-_WALL_UTIL_THRESHOLD = {'easy': 1.5, 'medium': 0.8, 'hard': 0.2}
+# Easy: only high-impact walls; Medium: moderate impact; Hard: almost any block.
+_WALL_UTIL_THRESHOLD = {'easy': 2.5, 'medium': 2.0, 'hard': 0.3}
+
+# Minimum intercept utility to fire the proactive path-interception.
+_INTERCEPT_THRESHOLD = {'easy': 18.0, 'medium': 16.0, 'hard': 12.0}
+# Max opponent distance to treasure for intercept to consider it.
+_INTERCEPT_OPP_MAX_DIST = {'easy': 3, 'medium': 5, 'hard': 7}
 
 
 def _opponent_threat(game_state):
@@ -34,6 +39,71 @@ def _opponent_threat(game_state):
         if d <= 2:
             max_threat = max(max_threat, t.value)
     return max_threat
+
+
+def _find_direct_intercept(game_state):
+    """Find the best wall on A*'s actual A* path to a high-value treasure.
+
+    Uses real A* pathfinding (not Manhattan approximation) to detect when
+    any of Minimax's valid wall positions sits on A*'s shortest route to
+    a nearby treasure.  Returns (Action, utility) or (None, 0.0).
+
+    Called once per Minimax turn at root level — not inside the search tree.
+    """
+    from game.rules import get_valid_wall_positions
+
+    player  = game_state.get_current_player()
+    opponent = game_state.get_opponent()
+    board   = game_state.board
+
+    wall_positions = get_valid_wall_positions(
+        board, player, opponent,
+        game_state.treasures, game_state.temp_walls,
+    )
+    if not wall_positions:
+        return None, 0.0
+
+    # Sort treasures by how dangerous they are for A* right now
+    opp_dists = bfs_all_distances(board, opponent.pos)
+    diff = getattr(game_state, 'difficulty', 'medium')
+    max_opp_dist = _INTERCEPT_OPP_MAX_DIST.get(diff, 5)
+    threatened = []
+    for t in game_state.treasures:
+        d = opp_dists.get(t.pos, 999)
+        if d > max_opp_dist:
+            continue
+        threatened.append((t.value / (d + 1), d, t))
+    if not threatened:
+        return None, 0.0
+    threatened.sort(key=lambda x: x[0], reverse=True)
+
+    best_wall = None
+    best_util = 0.0
+
+    # Check top-3 most threatening targets
+    for _, _, target in threatened[:3]:
+        opp_path = astar(board, opponent.pos, target.pos,
+                         blocked_extra={player.pos})
+        if not opp_path or len(opp_path) < 2:
+            continue
+
+        path_step = {pos: idx for idx, pos in enumerate(opp_path)}
+
+        for wp in wall_positions:
+            step = path_step.get(wp)
+            if step is None:
+                continue
+            # Utility: treasure value × how early in path we block
+            # step=1 → block immediately (max), step=6 → still useful
+            early_factor = max(0.25, 1.0 - step * 0.15)
+            util = target.value * early_factor * 2.0
+            if util > best_util:
+                best_util = util
+                best_wall = wp
+
+    if best_wall is not None:
+        return Action(ACTION_PLACE_WALL, best_wall), best_util
+    return None, 0.0
 
 
 def _filter_walls_by_utility(actions, game_state, difficulty):
@@ -84,10 +154,11 @@ def choose_action_minimax(game_state, difficulty):
 
     # ── Urgency: search deeper when behind or critical ──
     score_diff = player.score - opponent.score
+    max_urgency_depth = {'easy': 6, 'medium': 6, 'hard': 8}.get(difficulty, 7)
     if score_diff < -15:
-        depth = min(depth + 2, 7)
+        depth = min(depth + 2, max_urgency_depth)
     elif score_diff < -5:
-        depth = min(depth + 1, 6)
+        depth = min(depth + 1, max_urgency_depth)
 
     n_treasures = len(game_state.treasures)
     if len(actions) <= 3 or n_treasures <= 3:
@@ -105,24 +176,31 @@ def choose_action_minimax(game_state, difficulty):
                 best_capture_val = value
                 best_capture = action
 
-    # ── Smart instant-capture ────────────────────────────
-    # Diamonds: always grab immediately.
-    # Gold: grab unless opponent is threatening a bigger prize.
-    # Cash (5 pts): grab only when A* is NOT about to collect a diamond —
-    #   if A* is 1-2 steps from a diamond, search instead (may prefer blocking).
+    # ── Always grab an adjacent diamond ─────────────────
+    if best_capture and best_capture_val >= 20:
+        return best_capture
+
+    # ── Smart instant-capture (gold / cash) ──────────────
+    # Collection FIRST — each turn spent placing a wall is a turn not scoring.
     if best_capture:
-        if best_capture_val >= 20:
-            return best_capture
-        if best_capture_val >= 10:
+        if best_capture_val >= 10:              # gold
             opp_threat = _opponent_threat(game_state)
             if opp_threat <= best_capture_val:
                 return best_capture
-            # opp_threat > gold: fall through to search (may prefer blocking)
-        elif best_capture_val >= 5:   # cash only (< 10)
+            # opponent threatening diamond: fall through to search
+        elif best_capture_val >= 5:             # cash
             opp_threat = _opponent_threat(game_state)
-            if opp_threat < 15:          # no diamond threat — safe to grab cash
+            if opp_threat < 20:                 # no diamond threat nearby
                 return best_capture
-            # A* threatening a diamond: let search decide (block vs grab cash)
+
+    # ── Proactive path interception ───────────────────────────────────────────
+    # Only AFTER collection is checked.  Uses difficulty-scaled thresholds so
+    # Easy Minimax only fires on truly high-value intercepts (diamonds).
+    intercept_threshold = _INTERCEPT_THRESHOLD.get(difficulty, 16.0)
+    intercept_action, intercept_util = _find_direct_intercept(game_state)
+    if intercept_action is not None and intercept_util >= intercept_threshold:
+        if best_capture_val == 0 or intercept_util > best_capture_val * 2.0:
+            return intercept_action
 
     # ── Difficulty-based wall pre-filtering ──────────────
     # Removes walls that don't meet the minimum BFS-utility threshold.
@@ -138,6 +216,9 @@ def choose_action_minimax(game_state, difficulty):
         return actions[0]
 
     actions = _order_actions(actions, game_state)
+    # Decay history so recent turns dominate; clear stale TT entries.
+    # Do NOT clear history — it accumulates within a game for better ordering.
+    decay_history(factor=0.70)
     clear_transposition_table()
 
     root_children = []

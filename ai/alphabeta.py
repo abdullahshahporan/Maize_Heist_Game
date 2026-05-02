@@ -24,6 +24,25 @@ _TT_MAX_SIZE = 300000
 
 
 def clear_transposition_table():
+    """Clear the TT only. Called every Minimax turn to discard stale position
+    values from the previous board state. History is NOT cleared here — it
+    accumulates and decays within a game for better move ordering."""
+    _tt.clear()
+
+
+def decay_history(factor: float = 0.70):
+    """Decay all history values by *factor* so recent cutoffs dominate.
+    Called once per Minimax turn before the new search begins."""
+    if not _history:
+        return
+    for key in list(_history):
+        _history[key] = int(_history[key] * factor)
+
+
+def reset_for_new_game():
+    """Full reset at the start of every new game (initial or replay).
+    Clears both the TT and the history table so stale data from the
+    previous game's maze layout cannot contaminate the new game."""
     _tt.clear()
     _history.clear()
 
@@ -111,7 +130,8 @@ def _order_actions(actions, game_state):
             for (tr, tc), tv in treasure_values.items():
                 dist = abs(mr - tr) + abs(mc - tc)
                 if dist <= 6:
-                    treasure_pull += tv / (dist + 1)
+                    vscale = 1.0 + tv / 50.0
+                    treasure_pull += tv * vscale / (dist + 1)
 
             mobility = 0
             for dr, dc in _DIRS_AB:
@@ -151,11 +171,17 @@ def _order_actions(actions, game_state):
 
         # Bonus for walls near treasures opponent is close to
         treasure_block = 0
+        opp_path_bonus = 0.0
         for (tr, tc), tv in treasure_values.items():
             wall_to_t = abs(wr - tr) + abs(wc - tc)
-            opp_to_t = abs(opr - tr) + abs(opc - tc)
+            opp_to_t  = abs(opr - tr) + abs(opc - tc)
+            opp_to_wall = abs(opr - wr) + abs(opc - wc)
             if wall_to_t <= 2 and opp_to_t <= 4:
                 treasure_block += tv * 1.5
+            # Path-corridor check (Manhattan approximation):
+            # wall is on A*'s route when opp→wall + wall→t ≈ opp→t
+            if opp_to_wall < opp_to_t and opp_to_wall + wall_to_t <= opp_to_t + 1:
+                opp_path_bonus += tv * 2.5
 
         # Check if wall reduces opponent mobility
         opp_mobility_impact = 0
@@ -165,18 +191,18 @@ def _order_actions(actions, game_state):
                 opp_mobility_impact += 8  # blocks one of opponent's moves
 
         quality = (adj_walls * 3 + treasure_block + opp_near_bonus
-                   + opp_mobility_impact - dist_to_opp * 0.3 + history * 0.03)
+                   + opp_mobility_impact + opp_path_bonus
+                   - dist_to_opp * 0.3 + history * 0.03)
         walls.append((-quality, action.target, action))
 
     capture_moves.sort()
     quiet_moves.sort()
     walls.sort()
 
-    # Walls that actively block the opponent (quality ≥ 18, e.g. adjacent to
-    # opponent or sitting on their treasure path) are placed BEFORE quiet moves
-    # so alpha-beta cannot prune them before they are explored.  Weak walls
-    # stay at the end so they do not waste search budget.
-    _HIGH_WALL_Q = 18.0
+    # Walls that intercept A*'s path to treasure (quality ≥ 12) are placed
+    # BEFORE quiet moves so alpha-beta cannot prune them early.  Weak/random
+    # walls stay at the end.
+    _HIGH_WALL_Q = 12.0
     high_walls = [(s, t, a) for s, t, a in walls if -s >= _HIGH_WALL_Q]
     low_walls  = [(s, t, a) for s, t, a in walls if -s <  _HIGH_WALL_Q]
 
@@ -224,7 +250,7 @@ def alphabeta(game_state, depth, alpha, beta, maximizing, maximizing_player_id):
         return evaluate(game_state, maximizing_player_id)
 
     if depth >= 3 and len(actions) > 6:
-        actions = _beam_actions(actions, game_state, max_walls=3)
+        actions = _beam_actions(actions, game_state, max_walls=2)
     else:
         actions = _order_actions(actions, game_state)
 

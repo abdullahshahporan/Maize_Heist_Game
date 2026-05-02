@@ -22,6 +22,7 @@ from game.game_state import GameState
 from game.actions import ACTION_MOVE, ACTION_PLACE_WALL
 from ai.minimax_agent import choose_action_minimax
 from ai.astar_agent import choose_action_astar
+from ai.alphabeta import reset_for_new_game
 from ui.renderer import draw_board, draw_end_screen, draw_confirm_exit
 from ui.menu import run_main_menu
 from ui.screens import draw_opening
@@ -191,12 +192,14 @@ def main():
         game_state = build_game_state(mode, difficulty)
 
         while True:
+            reset_for_new_game()   # purge any stale TT/history from previous game
             result = run_game(screen, clock, game_state)
             if result == "quit":
                 pygame.quit()
                 return
             elif result == "replay":
                 game_state = build_game_state(mode, difficulty)
+                # reset_for_new_game() is called at the top of the loop
                 continue  # play again with same settings
             else:
                 break  # "menu" → back to outer loop

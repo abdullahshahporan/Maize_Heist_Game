@@ -88,9 +88,11 @@ def evaluate(game_state, maximizing_player_id):
                 race_score += t.value * 0.7
                 # Imminent capture bonus: I get it next turn
                 if d_me == 1:
-                    imminent_capture += t.value * 2.5
+                    imminent_capture += t.value * 3.0
                 elif d_me == 2:
-                    imminent_capture += t.value * 0.8
+                    imminent_capture += t.value * 1.0
+                elif d_me == 3:
+                    imminent_capture += t.value * 0.3
             elif d_opp < d_me:
                 # Opponent is closer — penalize but also incentivize blocking
                 race_score -= t.value * 0.3
@@ -175,6 +177,34 @@ def evaluate(game_state, maximizing_player_id):
     elif opp_dist_from_me <= 2:
         proximity_bonus = 1.5
 
+    # ── Blocking-position bonus (path interception guide) ──
+    # Reward Minimax for being adjacent to A*'s path corridor to nearby
+    # treasures.  Walls can ONLY be placed on adjacent cells, so being next
+    # to A*'s route means Minimax can intercept on the very next turn.
+    # This term drives the search tree to move Minimax into intercept positions
+    # even when no wall can be placed in the current state.
+    blocking_pos_bonus = 0.0
+    for dr, dc in _DIRS:
+        nr, nc = me.row + dr, me.col + dc
+        if not (0 <= nr < rows and 0 <= nc < cols):
+            continue
+        if grid[nr][nc] != CELL_EMPTY:
+            continue
+        if nr == opp.row and nc == opp.col:
+            continue
+        cell = (nr, nc)
+        d_opp_to_cell = opp_dists.get(cell, _INF)
+        if d_opp_to_cell >= _INF:
+            continue
+        for t in game_state.treasures:
+            d_opp_to_t = opp_dists.get((t.row, t.col), _INF)
+            if d_opp_to_t >= _INF:
+                continue
+            # Cell lies on A*'s BFS path when opp→cell + cell→t ≈ opp→t
+            d_cell_to_t = abs(nr - t.row) + abs(nc - t.col)
+            if d_opp_to_cell + d_cell_to_t <= d_opp_to_t + 1:
+                blocking_pos_bonus += t.value * 1.5
+
     # ── Map control ─────────────────────────────────────
     reachable_diff = my_reachable - opp_reachable
     control = my_freedom - opp_freedom
@@ -189,8 +219,16 @@ def evaluate(game_state, maximizing_player_id):
     elif n_treasures <= 7:
         urgency = 1.3
 
+    # ── Wall-overuse penalty ──────────────────────────────
+    # Penalize Minimax in the search tree when it has placed significantly
+    # more walls than the opponent.  This teaches the tree that spending
+    # turns on walls instead of collecting treasures hurts the score.
+    my_walls = getattr(me, 'walls_placed', 0)
+    opp_walls = getattr(opp, 'walls_placed', 0)
+    wall_overuse_penalty = max(0.0, (my_walls - opp_walls - 2)) * 5.5 * _block_scale
+
     return (
-        12.0 * score_diff
+        14.0 * score_diff
         + 5.0 * race_score * urgency
         + imminent_capture * urgency
         + 2.0 * dist_advantage
@@ -199,11 +237,13 @@ def evaluate(game_state, maximizing_player_id):
         + blocking_bonus * 1.5 * _block_scale
         + corridor_bonus * _block_scale
         + proximity_bonus * _block_scale
+        + blocking_pos_bonus * _block_scale
         + 1.8 * (my_moves - opp_moves)
         - trap_penalty
         + denial_bonus * urgency * _block_scale
-        + 3.0 * collection_diff
+        + 3.5 * collection_diff
         - opp_imminent_threat * urgency * _block_scale
+        - wall_overuse_penalty
     )
 
 
